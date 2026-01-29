@@ -189,6 +189,18 @@ func (c *PerplexityConnector) RegisterCommands(proc *commands.Processor) {
 			RequiresPortal: true,
 		},
 		&commands.FullHandler{
+			Func:    c.cmdConversation,
+			Name:    "conversation",
+			Aliases: []string{"conv", "history", "context"},
+			Help: commands.HelpMeta{
+				Section:     commands.HelpSectionGeneral,
+				Description: "Toggle conversation mode (maintain message history for multi-turn conversations)",
+				Args:        "[on|off|toggle]",
+			},
+			RequiresLogin:  true,
+			RequiresPortal: true,
+		},
+		&commands.FullHandler{
 			Func: c.cmdRemoveGhost,
 			Name: "remove-ghost",
 			Help: commands.HelpMeta{
@@ -550,6 +562,66 @@ func (c *PerplexityConnector) cmdMention(ce *commands.Event) {
 		ce.Reply("Mention-only mode **enabled**. Perplexity will only respond when @mentioned.")
 	} else {
 		ce.Reply("Mention-only mode **disabled**. Perplexity will respond to all messages.")
+	}
+}
+
+// cmdConversation toggles conversation mode (multi-turn history).
+func (c *PerplexityConnector) cmdConversation(ce *commands.Event) {
+	if ce.Portal == nil {
+		ce.Reply("This command must be run in a Perplexity conversation room.")
+		return
+	}
+
+	meta, ok := ce.Portal.Metadata.(*PortalMetadata)
+	if !ok || meta == nil {
+		ce.Reply("Failed to get room metadata.")
+		return
+	}
+
+	// If no argument, show current status
+	if len(ce.Args) == 0 {
+		if meta.ConversationMode {
+			ce.Reply("**Conversation mode:** ON\n\nPerplexity maintains message history for multi-turn conversations.\n\nUse `conversation off` to disable (each message is independent).\nUse `clear` to reset the conversation history.")
+		} else {
+			ce.Reply("**Conversation mode:** OFF\n\nEach message is independent (no history). This is ideal for search queries.\n\nUse `conversation on` to enable multi-turn conversations.")
+		}
+		return
+	}
+
+	// Parse argument
+	arg := strings.ToLower(ce.Args[0])
+	var newValue bool
+	switch arg {
+	case "on", "true", "yes", "1", "enable", "enabled":
+		newValue = true
+	case "off", "false", "no", "0", "disable", "disabled":
+		newValue = false
+	case "toggle":
+		newValue = !meta.ConversationMode
+	default:
+		ce.Reply("Invalid argument. Use `conversation on`, `conversation off`, or `conversation toggle`.")
+		return
+	}
+
+	oldValue := meta.ConversationMode
+	meta.ConversationMode = newValue
+	if err := ce.Portal.Save(ce.Ctx); err != nil {
+		meta.ConversationMode = oldValue
+		ce.Reply("Failed to save setting: %v", err)
+		return
+	}
+
+	if newValue {
+		ce.Reply("Conversation mode **enabled**. Perplexity will remember previous messages in this room.\n\nUse `clear` to reset the conversation history.")
+	} else {
+		// Clear history when disabling conversation mode
+		login := ce.User.GetDefaultLogin()
+		if login != nil {
+			if client, ok := login.Client.(*PerplexityClient); ok && client != nil {
+				client.ClearConversation(ce.Portal.PortalKey.ID)
+			}
+		}
+		ce.Reply("Conversation mode **disabled**. Each message is now independent (history cleared).")
 	}
 }
 

@@ -554,6 +554,11 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		ctx = sidecar.WithUserCredentials(ctx, string(c.UserLogin.UserMXID), apiKey)
 	}
 
+	// Add conversation mode from portal metadata (default: false = no history)
+	if meta, ok := msg.Portal.Metadata.(*PortalMetadata); ok && meta != nil && meta.ConversationMode {
+		ctx = sidecar.WithConversationMode(ctx, true)
+	}
+
 	// Create a context with timeout for the sidecar call to prevent hanging forever
 	// Use sidecar timeout config (defaults to 5 minutes)
 	streamTimeout := time.Duration(c.Connector.Config.Sidecar.GetTimeout()) * time.Second

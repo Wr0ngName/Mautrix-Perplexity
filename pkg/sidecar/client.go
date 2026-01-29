@@ -78,6 +78,7 @@ type ChatRequest struct {
 	WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
 	MaxTokens        *int              `json:"max_tokens,omitempty"`
 	Temperature      *float64          `json:"temperature,omitempty"`
+	ConversationMode bool              `json:"conversation_mode,omitempty"` // Enable multi-turn history (default: false)
 }
 
 // SearchResult represents a search result from Perplexity.
@@ -265,11 +266,11 @@ func (c *Client) TestAuth(ctx context.Context, userID, apiKey string) (*TestAuth
 
 // Chat sends a message to Perplexity and returns the response.
 func (c *Client) Chat(ctx context.Context, portalID, userID, apiKey, message string, systemPrompt, model *string) (*ChatResponse, error) {
-	return c.ChatWithContent(ctx, portalID, userID, apiKey, message, nil, systemPrompt, model, nil)
+	return c.ChatWithContent(ctx, portalID, userID, apiKey, message, nil, systemPrompt, model, nil, false)
 }
 
 // ChatWithContent sends a message to Perplexity with optional structured content (for images).
-func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, message string, content []ContentBlock, systemPrompt, model *string, webSearchOptions *WebSearchOptions) (*ChatResponse, error) {
+func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, message string, content []ContentBlock, systemPrompt, model *string, webSearchOptions *WebSearchOptions, conversationMode bool) (*ChatResponse, error) {
 	// Validate required fields early to avoid unnecessary network calls
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
@@ -295,6 +296,7 @@ func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, 
 		Model:            model,
 		Stream:           false,
 		WebSearchOptions: webSearchOptions,
+		ConversationMode: conversationMode,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)

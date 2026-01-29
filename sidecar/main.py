@@ -131,6 +131,7 @@ class ChatRequest(BaseModel):
     web_search_options: Optional[WebSearchOptions] = None
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
+    conversation_mode: bool = False  # Enable multi-turn history (default: off)
 
     def has_images(self) -> bool:
         """Check if this request contains images."""
@@ -510,7 +511,7 @@ async def test_auth(request: TestAuthRequest):
 async def chat(request: ChatRequest):
     """
     Send a message to Perplexity and get a response.
-    Maintains conversation history per portal for multi-turn conversations.
+    Only maintains conversation history if conversation_mode is enabled.
     """
     start_time = time.time()
 
@@ -521,18 +522,21 @@ async def chat(request: ChatRequest):
     session = await session_manager.get_or_create(request.portal_id)
 
     try:
-        # Build user content for history
+        # Build user content for history (only used if conversation_mode enabled)
         user_content = build_user_content(request)
 
-        # Run query with timeout, passing session for history
+        # Run query with timeout
+        # Only pass session for history if conversation_mode is enabled
+        session_for_history = session if request.conversation_mode else None
         async with asyncio.timeout(QUERY_TIMEOUT):
-            query_result = await run_query(request, session)
+            query_result = await run_query(request, session_for_history)
 
-        # Add user message and assistant response to history
-        session.add_message("user", user_content)
-        session.add_message("assistant", query_result.response_text)
+        # Only save to history if conversation_mode is enabled
+        if request.conversation_mode:
+            session.add_message("user", user_content)
+            session.add_message("assistant", query_result.response_text)
 
-        # Update session token stats
+        # Update session token stats (always track for billing purposes)
         session.input_tokens += query_result.input_tokens
         session.output_tokens += query_result.output_tokens
 
@@ -585,7 +589,7 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """
     Send a message to Perplexity and stream the response.
-    Maintains conversation history per portal for multi-turn conversations.
+    Only maintains conversation history if conversation_mode is enabled.
     """
     # Validate input
     request.validate_input()
@@ -593,23 +597,27 @@ async def chat_stream(request: ChatRequest):
     # Get or create session
     session = await session_manager.get_or_create(request.portal_id)
 
-    # Build user content for history
+    # Build user content for history (only used if conversation_mode enabled)
     user_content = build_user_content(request)
+
+    # Only pass session for history if conversation_mode is enabled
+    session_for_history = session if request.conversation_mode else None
 
     async def generate() -> AsyncIterator[str]:
         response_text = []
         try:
             async with asyncio.timeout(QUERY_TIMEOUT):
-                async for event in run_query_stream(request, session):
+                async for event in run_query_stream(request, session_for_history):
                     yield f"data: {json.dumps(event)}\n\n"
                     # Collect response text for history
                     if event.get("type") == "text" and event.get("content"):
                         response_text.append(event["content"])
 
-            # Add user message and assistant response to history
-            session.add_message("user", user_content)
-            if response_text:
-                session.add_message("assistant", "".join(response_text))
+            # Only save to history if conversation_mode is enabled
+            if request.conversation_mode:
+                session.add_message("user", user_content)
+                if response_text:
+                    session.add_message("assistant", "".join(response_text))
 
         except asyncio.TimeoutError:
             logger.error(f"Stream query timed out for portal {request.portal_id}")
