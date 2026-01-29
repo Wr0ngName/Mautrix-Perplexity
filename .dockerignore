@@ -1,0 +1,32 @@
+# Binaries
+mautrix-candy
+*.exe
+
+# Data and config
+data/
+config.yaml
+registration.yaml
+*.db
+
+# Capture data
+capture/
+*.mitmproxy
+*.mitm
+
+# Documentation
+docs/
+*.md
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

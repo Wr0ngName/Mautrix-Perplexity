@@ -1,0 +1,48 @@
+services:
+  mautrix-claude:
+    container_name: mautrix-claude
+    image: mautrix-claude:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      - UID=1000
+      - GID=1000
+      # Increase Node.js memory limit for Claude Agent SDK
+      - NODE_OPTIONS=--max-old-space-size=2048
+    # IMPORTANT: Claude Agent SDK's bundled CLI is extremely memory-hungry
+    # Needs at least 2-4GB RAM. OOM kills happen with less.
+    #
+    # For docker compose v2 (docker compose up):
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+    # For legacy docker-compose or when deploy doesn't work:
+    # Uncomment these if using old docker-compose:
+    # mem_limit: 4g
+    # memswap_limit: 4g
+    # If you're using a postgres database, uncomment the following:
+    # depends_on:
+    #   - postgres
+
+  # Uncomment and configure if you need a database
+  # For SQLite (default), no database container is needed
+  # postgres:
+  #   container_name: mautrix-claude-postgres
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   environment:
+  #     POSTGRES_USER: mautrix
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: mautrix_claude
+
+# volumes:
+#   postgres_data:

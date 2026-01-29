@@ -1,0 +1,13 @@
+# Build artifacts
+mautrix-claude
+
+# Runtime data
+data/
+
+# Python
+__pycache__/
+*.pyc
+
+# Review files
+*_REVIEW*.md
+SECURITY_SUMMARY.md
