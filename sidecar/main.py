@@ -122,7 +122,7 @@ class ChatRequest(BaseModel):
     """Request body for chat endpoint."""
     portal_id: str
     api_key: str  # Per-user Perplexity API key
-    user_id: Optional[str] = None  # Matrix user ID (for logging)
+    user_id: Optional[str] = None  # Matrix user ID (for session isolation in multi-user relay)
     message: str  # Text message
     content: Optional[list[ContentBlock]] = None  # Structured content (for images)
     system_prompt: Optional[str] = None
@@ -132,6 +132,16 @@ class ChatRequest(BaseModel):
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
     conversation_mode: bool = False  # Enable multi-turn history (default: off)
+
+    def get_session_key(self) -> str:
+        """
+        Generate unique session key for isolation.
+        In multi-user relay mode, each user gets their own conversation history.
+        Format: portal_id:user_id (or just portal_id if no user_id)
+        """
+        if self.user_id:
+            return f"{self.portal_id}:{self.user_id}"
+        return self.portal_id
 
     def has_images(self) -> bool:
         """Check if this request contains images."""
@@ -512,14 +522,16 @@ async def chat(request: ChatRequest):
     """
     Send a message to Perplexity and get a response.
     Only maintains conversation history if conversation_mode is enabled.
+    Sessions are keyed by (portal_id, user_id) for multi-user isolation.
     """
     start_time = time.time()
 
     # Validate input
     request.validate_input()
 
-    # Get or create session
-    session = await session_manager.get_or_create(request.portal_id)
+    # Get or create session using composite key for multi-user isolation
+    session_key = request.get_session_key()
+    session = await session_manager.get_or_create(session_key)
 
     try:
         # Build user content for history (only used if conversation_mode enabled)
@@ -590,12 +602,14 @@ async def chat_stream(request: ChatRequest):
     """
     Send a message to Perplexity and stream the response.
     Only maintains conversation history if conversation_mode is enabled.
+    Sessions are keyed by (portal_id, user_id) for multi-user isolation.
     """
     # Validate input
     request.validate_input()
 
-    # Get or create session
-    session = await session_manager.get_or_create(request.portal_id)
+    # Get or create session using composite key for multi-user isolation
+    session_key = request.get_session_key()
+    session = await session_manager.get_or_create(session_key)
 
     # Build user content for history (only used if conversation_mode enabled)
     user_content = build_user_content(request)
