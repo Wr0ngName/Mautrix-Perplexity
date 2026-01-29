@@ -75,9 +75,13 @@ app = FastAPI(
 
 @dataclass
 class Session:
-    """Represents a conversation session with message history."""
+    """Represents a conversation session with message history.
+
+    Sessions are keyed by session_key which is a composite of portal_id:user_id
+    for multi-user isolation in relay mode.
+    """
     session_id: str
-    portal_id: str
+    session_key: str  # Composite key: "portal_id:user_id" or just "portal_id"
     created_at: float = field(default_factory=time.time)
     last_used: float = field(default_factory=time.time)
     message_count: int = 0
@@ -198,7 +202,11 @@ class ChatResponse(BaseModel):
 
 
 class SessionManager:
-    """Manages conversation sessions per portal."""
+    """Manages conversation sessions.
+
+    Sessions are keyed by composite session_key (portal_id:user_id) for
+    multi-user isolation in relay mode.
+    """
 
     def __init__(self):
         self.sessions: Dict[str, Session] = {}
@@ -236,49 +244,53 @@ class SessionManager:
         async with self._lock:
             now = time.time()
             expired = [
-                portal_id for portal_id, session in self.sessions.items()
+                session_key for session_key, session in self.sessions.items()
                 if now - session.last_used > SESSION_TIMEOUT
             ]
-            for portal_id in expired:
-                del self.sessions[portal_id]
-                logger.info(f"Cleaned up expired session for portal {portal_id}")
+            for session_key in expired:
+                del self.sessions[session_key]
+                logger.info(f"Cleaned up expired session: {session_key}")
             ACTIVE_SESSIONS.set(len(self.sessions))
 
-    async def get_or_create(self, portal_id: str) -> Session:
-        """Get existing session or create new one."""
+    async def get_or_create(self, session_key: str) -> Session:
+        """Get existing session or create new one.
+
+        Args:
+            session_key: Composite key in format "portal_id:user_id" or just "portal_id"
+        """
         import uuid
         async with self._lock:
-            if portal_id not in self.sessions:
+            if session_key not in self.sessions:
                 session = Session(
                     session_id=str(uuid.uuid4()),
-                    portal_id=portal_id
+                    session_key=session_key
                 )
-                self.sessions[portal_id] = session
-                logger.info(f"Created new session {session.session_id} for portal {portal_id}")
+                self.sessions[session_key] = session
+                logger.info(f"Created new session {session.session_id} for key {session_key}")
                 ACTIVE_SESSIONS.set(len(self.sessions))
 
-            session = self.sessions[portal_id]
+            session = self.sessions[session_key]
             session.last_used = time.time()
             return session
 
-    async def delete(self, portal_id: str) -> bool:
-        """Delete a session."""
+    async def delete(self, session_key: str) -> bool:
+        """Delete a session by its key."""
         async with self._lock:
-            if portal_id in self.sessions:
-                del self.sessions[portal_id]
+            if session_key in self.sessions:
+                del self.sessions[session_key]
                 ACTIVE_SESSIONS.set(len(self.sessions))
-                logger.info(f"Deleted session for portal {portal_id}")
+                logger.info(f"Deleted session: {session_key}")
                 return True
             return False
 
-    async def get_stats(self, portal_id: str) -> Optional[dict]:
+    async def get_stats(self, session_key: str) -> Optional[dict]:
         """Get session statistics."""
         async with self._lock:
-            if portal_id in self.sessions:
-                session = self.sessions[portal_id]
+            if session_key in self.sessions:
+                session = self.sessions[session_key]
                 return {
                     "session_id": session.session_id,
-                    "portal_id": session.portal_id,
+                    "session_key": session.session_key,
                     "created_at": session.created_at,
                     "last_used": session.last_used,
                     "message_count": session.message_count,
