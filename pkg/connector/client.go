@@ -555,8 +555,17 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	// Add conversation mode from portal metadata (default: false = no history)
-	if meta, ok := msg.Portal.Metadata.(*PortalMetadata); ok && meta != nil && meta.ConversationMode {
+	if meta.ConversationMode {
 		ctx = sidecar.WithConversationMode(ctx, true)
+	}
+
+	// Add web search options from portal metadata if configured
+	if len(meta.WebSearchDomains) > 0 || meta.WebSearchRecency != "" {
+		webOpts := &sidecar.WebSearchOptions{
+			SearchDomainFilter:  meta.WebSearchDomains,
+			SearchRecencyFilter: meta.WebSearchRecency,
+		}
+		ctx = sidecar.WithWebSearchOptions(ctx, webOpts)
 	}
 
 	// Create a context with timeout for the sidecar call to prevent hanging forever

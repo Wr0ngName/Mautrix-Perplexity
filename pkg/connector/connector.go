@@ -235,12 +235,14 @@ type MessageMetadata struct {
 
 // PortalMetadata contains Perplexity-specific portal/room metadata.
 type PortalMetadata struct {
-	ConversationName string   `json:"conversation_name"`
-	Model            string   `json:"model"`                      // Selected model for this room
-	SystemPrompt     string   `json:"system_prompt,omitempty"`    // Custom system prompt
-	Temperature      *float64 `json:"temperature,omitempty"`      // Custom temperature
-	MentionOnly      bool     `json:"mention_only,omitempty"`     // Only respond when mentioned
-	ConversationMode bool     `json:"conversation_mode,omitempty"` // Enable multi-turn conversation history (default: off)
+	ConversationName     string   `json:"conversation_name"`
+	Model                string   `json:"model"`                         // Selected model for this room
+	SystemPrompt         string   `json:"system_prompt,omitempty"`       // Custom system prompt
+	Temperature          *float64 `json:"temperature,omitempty"`         // Custom temperature
+	MentionOnly          bool     `json:"mention_only,omitempty"`        // Only respond when mentioned
+	ConversationMode     bool     `json:"conversation_mode,omitempty"`   // Enable multi-turn conversation history (default: off)
+	WebSearchDomains     []string `json:"web_search_domains,omitempty"`  // Domain filter for web search (include only these)
+	WebSearchRecency     string   `json:"web_search_recency,omitempty"`  // Recency filter: day, week, month, year
 }
 
 // GetTemperature returns the temperature for this portal, or the default if not set.

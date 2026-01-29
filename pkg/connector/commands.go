@@ -201,6 +201,18 @@ func (c *PerplexityConnector) RegisterCommands(proc *commands.Processor) {
 			RequiresPortal: true,
 		},
 		&commands.FullHandler{
+			Func:    c.cmdWeb,
+			Name:    "web",
+			Aliases: []string{"search", "web-search"},
+			Help: commands.HelpMeta{
+				Section:     commands.HelpSectionGeneral,
+				Description: "Configure web search options (domain filter and recency)",
+				Args:        "[domains <domain1,domain2,...>|recency <day|week|month|year>|clear]",
+			},
+			RequiresLogin:  true,
+			RequiresPortal: true,
+		},
+		&commands.FullHandler{
 			Func: c.cmdRemoveGhost,
 			Name: "remove-ghost",
 			Help: commands.HelpMeta{
@@ -622,6 +634,153 @@ func (c *PerplexityConnector) cmdConversation(ce *commands.Event) {
 			}
 		}
 		ce.Reply("Conversation mode **disabled**. Each message is now independent (history cleared).")
+	}
+}
+
+// cmdWeb configures web search options (domain filter and recency).
+func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
+	if ce.Portal == nil {
+		ce.Reply("This command must be run in a Perplexity conversation room.")
+		return
+	}
+
+	meta, ok := ce.Portal.Metadata.(*PortalMetadata)
+	if !ok || meta == nil {
+		ce.Reply("Failed to get room metadata.")
+		return
+	}
+
+	// If no argument, show current settings
+	if len(ce.Args) == 0 {
+		var sb strings.Builder
+		sb.WriteString("**Web Search Settings**\n\n")
+
+		if len(meta.WebSearchDomains) > 0 {
+			sb.WriteString("**Domain filter:** ")
+			sb.WriteString(strings.Join(meta.WebSearchDomains, ", "))
+			sb.WriteString("\n")
+		} else {
+			sb.WriteString("**Domain filter:** none (search all domains)\n")
+		}
+
+		if meta.WebSearchRecency != "" {
+			sb.WriteString("**Recency filter:** ")
+			sb.WriteString(meta.WebSearchRecency)
+			sb.WriteString("\n")
+		} else {
+			sb.WriteString("**Recency filter:** none (all time)\n")
+		}
+
+		sb.WriteString("\n**Usage:**\n")
+		sb.WriteString("- `web domains example.com,docs.example.org` - Only search these domains\n")
+		sb.WriteString("- `web recency day|week|month|year` - Limit to recent results\n")
+		sb.WriteString("- `web clear` - Remove all filters\n")
+		ce.Reply(sb.String())
+		return
+	}
+
+	subCmd := strings.ToLower(ce.Args[0])
+	switch subCmd {
+	case "domains", "domain", "sites", "site":
+		if len(ce.Args) < 2 {
+			if len(meta.WebSearchDomains) > 0 {
+				ce.Reply("**Current domain filter:** %s\n\nTo change: `web domains domain1.com,domain2.org`\nTo clear: `web domains clear`", strings.Join(meta.WebSearchDomains, ", "))
+			} else {
+				ce.Reply("No domain filter set. To add: `web domains domain1.com,domain2.org`")
+			}
+			return
+		}
+
+		arg := ce.Args[1]
+		if arg == "clear" || arg == "none" || arg == "off" {
+			oldDomains := meta.WebSearchDomains
+			meta.WebSearchDomains = nil
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				meta.WebSearchDomains = oldDomains
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("Domain filter **cleared**. Perplexity will search all domains.")
+			return
+		}
+
+		// Parse comma-separated domains
+		domains := strings.Split(arg, ",")
+		cleanDomains := make([]string, 0, len(domains))
+		for _, d := range domains {
+			d = strings.TrimSpace(strings.ToLower(d))
+			if d != "" {
+				cleanDomains = append(cleanDomains, d)
+			}
+		}
+
+		if len(cleanDomains) == 0 {
+			ce.Reply("No valid domains provided. Example: `web domains example.com,docs.example.org`")
+			return
+		}
+
+		oldDomains := meta.WebSearchDomains
+		meta.WebSearchDomains = cleanDomains
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.WebSearchDomains = oldDomains
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("Domain filter set to: **%s**\n\nPerplexity will only search these domains.", strings.Join(cleanDomains, ", "))
+
+	case "recency", "recent", "time", "filter":
+		if len(ce.Args) < 2 {
+			if meta.WebSearchRecency != "" {
+				ce.Reply("**Current recency filter:** %s\n\nTo change: `web recency day|week|month|year`\nTo clear: `web recency clear`", meta.WebSearchRecency)
+			} else {
+				ce.Reply("No recency filter set (searching all time). To add: `web recency day|week|month|year`")
+			}
+			return
+		}
+
+		arg := strings.ToLower(ce.Args[1])
+		if arg == "clear" || arg == "none" || arg == "off" || arg == "all" {
+			oldRecency := meta.WebSearchRecency
+			meta.WebSearchRecency = ""
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				meta.WebSearchRecency = oldRecency
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("Recency filter **cleared**. Perplexity will search all time.")
+			return
+		}
+
+		validRecency := map[string]bool{"day": true, "week": true, "month": true, "year": true}
+		if !validRecency[arg] {
+			ce.Reply("Invalid recency value. Use: `day`, `week`, `month`, or `year`.")
+			return
+		}
+
+		oldRecency := meta.WebSearchRecency
+		meta.WebSearchRecency = arg
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.WebSearchRecency = oldRecency
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("Recency filter set to: **%s**\n\nPerplexity will prioritize results from the last %s.", arg, arg)
+
+	case "clear", "reset":
+		oldDomains := meta.WebSearchDomains
+		oldRecency := meta.WebSearchRecency
+		meta.WebSearchDomains = nil
+		meta.WebSearchRecency = ""
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.WebSearchDomains = oldDomains
+			meta.WebSearchRecency = oldRecency
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("Web search filters **cleared**. Perplexity will search all domains and all time.")
+
+	default:
+		ce.Reply("Unknown subcommand. Use:\n- `web domains <domain1,domain2,...>`\n- `web recency <day|week|month|year>`\n- `web clear`")
 	}
 }
 
