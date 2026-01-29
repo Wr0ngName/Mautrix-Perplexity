@@ -9,7 +9,7 @@ import (
 )
 
 // GetChatInfo returns information about a chat.
-func (c *ClaudeClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
+func (c *PerplexityClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	// Get portal metadata, use defaults if not available
 	meta, _ := portal.Metadata.(*PortalMetadata)
 	if meta == nil {
@@ -21,11 +21,11 @@ func (c *ClaudeClient) GetChatInfo(ctx context.Context, portal *bridgev2.Portal)
 	if model == "" {
 		model = c.Connector.Config.GetDefaultModel()
 	}
-	ghostID := c.Connector.MakeClaudeGhostID(model)
+	ghostID := c.Connector.MakePerplexityGhostID(model)
 
 	name := meta.ConversationName
 	if name == "" {
-		name = fmt.Sprintf("Conversation with Claude (%s)", model)
+		name = fmt.Sprintf("Conversation with Perplexity (%s)", model)
 	}
 
 	return &bridgev2.ChatInfo{

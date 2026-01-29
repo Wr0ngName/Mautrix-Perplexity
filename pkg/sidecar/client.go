@@ -1,5 +1,5 @@
-// Package sidecar provides a client for the Claude Agent SDK sidecar.
-// This allows the bridge to use Pro/Max subscriptions via the Agent SDK.
+// Package sidecar provides a client for the Perplexity API sidecar.
+// This allows the bridge to use the official Perplexity Python SDK.
 package sidecar
 
 import (
@@ -16,56 +16,29 @@ import (
 )
 
 // Retry and circuit breaker configuration.
-// These constants control the resilience behavior of the sidecar client.
 const (
-	// maxRetries is the maximum number of retry attempts for failed requests.
-	// After this many failures, the request returns an error to the caller.
-	maxRetries = 3
-
-	// initialBackoff is the starting delay for exponential backoff between retries.
-	// Each subsequent retry doubles this delay (100ms -> 200ms -> 400ms -> ...).
-	initialBackoff = 100 * time.Millisecond
-
-	// maxBackoff caps the exponential backoff delay to prevent excessive waits.
-	maxBackoff = 5 * time.Second
-
-	// circuitThreshold is the number of consecutive failures required to open the circuit.
-	// Once opened, all requests fail immediately until circuitTimeout passes.
+	maxRetries       = 3
+	initialBackoff   = 100 * time.Millisecond
+	maxBackoff       = 5 * time.Second
 	circuitThreshold = 5
-
-	// circuitTimeout is how long the circuit stays open before allowing a test request.
-	// After this duration, the circuit enters "half-open" state and allows one request through.
-	// If that request succeeds, circuit closes. If it fails, circuit reopens.
-	circuitTimeout = 30 * time.Second
+	circuitTimeout   = 30 * time.Second
 )
 
 // CircuitState represents the state of the circuit breaker.
-// The circuit breaker pattern prevents cascading failures by failing fast when
-// a downstream service is unhealthy.
-//
-// State transitions:
-//   - Closed -> Open: After circuitThreshold consecutive failures
-//   - Open -> HalfOpen: After circuitTimeout passes
-//   - HalfOpen -> Closed: On successful request
-//   - HalfOpen -> Open: On failed request
 type CircuitState int
 
 const (
-	// CircuitClosed allows all requests through (normal operation).
 	CircuitClosed CircuitState = iota
-	// CircuitOpen rejects all requests immediately (service is unhealthy).
 	CircuitOpen
-	// CircuitHalfOpen allows one test request to check if service recovered.
 	CircuitHalfOpen
 )
 
-// Client is an HTTP client for the Claude Agent SDK sidecar.
+// Client is an HTTP client for the Perplexity API sidecar.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	log        zerolog.Logger
 
-	// Circuit breaker state
 	mu               sync.Mutex
 	circuitState     CircuitState
 	consecutiveFails int
@@ -86,56 +59,67 @@ type ImageSource struct {
 	Data      string `json:"data"`       // Base64-encoded image data
 }
 
+// WebSearchOptions represents Perplexity web search options.
+type WebSearchOptions struct {
+	SearchDomainFilter  []string `json:"search_domain_filter,omitempty"`
+	SearchRecencyFilter string   `json:"search_recency_filter,omitempty"` // "day", "week", "month", "year"
+}
+
 // ChatRequest is the request body for the chat endpoint.
 type ChatRequest struct {
-	PortalID        string         `json:"portal_id"`
-	UserID          string         `json:"user_id,omitempty"`          // Matrix user ID for per-user sessions
-	CredentialsJSON string         `json:"credentials_json,omitempty"` // User's Claude credentials for Pro/Max
-	Message         string         `json:"message"`                    // Text-only message (backward compat)
-	Content         []ContentBlock `json:"content,omitempty"`          // Structured content with images (multimodal)
-	SystemPrompt    *string        `json:"system_prompt,omitempty"`
-	Model           *string        `json:"model,omitempty"`
-	SessionID       string         `json:"session_id,omitempty"` // Agent SDK session ID for resume (from bridge DB)
-	Stream          bool           `json:"stream"`
+	PortalID         string            `json:"portal_id"`
+	APIKey           string            `json:"api_key"`                      // Perplexity API key
+	UserID           string            `json:"user_id,omitempty"`            // Matrix user ID (for logging)
+	Message          string            `json:"message"`                      // Text-only message
+	Content          []ContentBlock    `json:"content,omitempty"`            // Structured content with images
+	SystemPrompt     *string           `json:"system_prompt,omitempty"`
+	Model            *string           `json:"model,omitempty"`
+	Stream           bool              `json:"stream"`
+	WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
+	MaxTokens        *int              `json:"max_tokens,omitempty"`
+	Temperature      *float64          `json:"temperature,omitempty"`
+}
+
+// SearchResult represents a search result from Perplexity.
+type SearchResult struct {
+	Title string `json:"title,omitempty"`
+	URL   string `json:"url,omitempty"`
+	Date  string `json:"date,omitempty"`
 }
 
 // ChatResponse is the response body from the chat endpoint.
 type ChatResponse struct {
-	PortalID   string `json:"portal_id"`
-	SessionID  string `json:"session_id"`
-	Response   string `json:"response"`
-	Model      string `json:"model"` // Actual model used for this request
-	TokensUsed *int   `json:"tokens_used,omitempty"`
+	PortalID      string         `json:"portal_id"`
+	SessionID     string         `json:"session_id"`
+	Response      string         `json:"response"`
+	Model         string         `json:"model"`
+	TokensUsed    *int           `json:"tokens_used,omitempty"`
+	SearchResults []SearchResult `json:"search_results,omitempty"`
 }
 
 // SessionStats contains statistics about a session.
 type SessionStats struct {
-	SessionID            string   `json:"session_id"`
-	PortalID             string   `json:"portal_id"`
-	CreatedAt            float64  `json:"created_at"`
-	LastUsed             float64  `json:"last_used"`
-	MessageCount         int      `json:"message_count"`
-	AgeSeconds           float64  `json:"age_seconds"`
-	InputTokens          int64    `json:"input_tokens"`
-	OutputTokens         int64    `json:"output_tokens"`
-	CacheCreationTokens  int64    `json:"cache_creation_tokens"`
-	CacheReadTokens      int64    `json:"cache_read_tokens"`
-	CompactionCount      int      `json:"compaction_count"`
-	LastCompactionTime   *float64 `json:"last_compaction_time,omitempty"`
+	SessionID    string  `json:"session_id"`
+	PortalID     string  `json:"portal_id"`
+	CreatedAt    float64 `json:"created_at"`
+	LastUsed     float64 `json:"last_used"`
+	MessageCount int     `json:"message_count"`
+	AgeSeconds   float64 `json:"age_seconds"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
 }
 
 // HealthResponse is the response from the health endpoint.
 type HealthResponse struct {
-	Status        string  `json:"status"`        // "healthy" or "degraded"
-	Sessions      int     `json:"sessions"`      // Active session count
-	Authenticated bool    `json:"authenticated"` // Whether Claude Code auth is valid
-	Message       *string `json:"message"`       // Error message if not authenticated
+	Status        string `json:"status"`        // "healthy"
+	Sessions      int    `json:"sessions"`      // Active session count
+	Authenticated bool   `json:"authenticated"` // Always true for Perplexity (per-request auth)
 }
 
-// TestAuthRequest is the request body for testing user credentials.
+// TestAuthRequest is the request body for testing user API key.
 type TestAuthRequest struct {
-	UserID          string `json:"user_id"`
-	CredentialsJSON string `json:"credentials_json"`
+	UserID string `json:"user_id"`
+	APIKey string `json:"api_key"`
 }
 
 // TestAuthResponse is the response from the auth test endpoint.
@@ -144,35 +128,10 @@ type TestAuthResponse struct {
 	Message string `json:"message"`
 }
 
-// OAuthStartRequest is the request body to start OAuth login flow.
-type OAuthStartRequest struct {
-	UserID string `json:"user_id"`
-}
-
-// OAuthStartResponse is the response from the OAuth start endpoint.
-type OAuthStartResponse struct {
-	AuthURL string `json:"auth_url"`
-	State   string `json:"state"`
-}
-
-// OAuthCompleteRequest is the request to complete OAuth login flow.
-type OAuthCompleteRequest struct {
-	UserID string `json:"user_id"`
-	State  string `json:"state"`
-	Code   string `json:"code"`
-}
-
-// OAuthCompleteResponse is the response from OAuth completion.
-type OAuthCompleteResponse struct {
-	Success         bool    `json:"success"`
-	CredentialsJSON *string `json:"credentials_json,omitempty"`
-	Message         string  `json:"message"`
-}
-
 // NewClient creates a new sidecar client with the specified timeout.
 func NewClient(baseURL string, timeout time.Duration, log zerolog.Logger) *Client {
 	if timeout <= 0 {
-		timeout = 5 * time.Minute // Default timeout for Claude responses
+		timeout = 5 * time.Minute
 	}
 	return &Client{
 		baseURL: baseURL,
@@ -184,15 +143,12 @@ func NewClient(baseURL string, timeout time.Duration, log zerolog.Logger) *Clien
 	}
 }
 
-// checkCircuit checks if a request should be allowed based on circuit state.
-// Returns true if request should proceed, false if circuit is open.
 func (c *Client) checkCircuit() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	switch c.circuitState {
 	case CircuitOpen:
-		// Check if timeout has passed
 		if time.Since(c.lastFailTime) >= circuitTimeout {
 			c.circuitState = CircuitHalfOpen
 			c.log.Info().Msg("Circuit breaker: half-open, allowing test request")
@@ -205,7 +161,6 @@ func (c *Client) checkCircuit() bool {
 	return true
 }
 
-// recordSuccess records a successful request.
 func (c *Client) recordSuccess() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -217,7 +172,6 @@ func (c *Client) recordSuccess() {
 	}
 }
 
-// recordFailure records a failed request.
 func (c *Client) recordFailure() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -231,16 +185,13 @@ func (c *Client) recordFailure() {
 	}
 }
 
-// isRetryable checks if an error or status code is retryable.
 func isRetryable(err error, statusCode int) bool {
 	if err != nil {
-		return true // Network errors are retryable
+		return true
 	}
-	// Retry on 5xx server errors and 429 rate limit
 	return statusCode >= 500 || statusCode == 429
 }
 
-// backoff calculates exponential backoff duration.
 func backoff(attempt int) time.Duration {
 	delay := initialBackoff * time.Duration(1<<uint(attempt))
 	if delay > maxBackoff {
@@ -275,11 +226,11 @@ func (c *Client) Health(ctx context.Context) (*HealthResponse, error) {
 	return &health, nil
 }
 
-// TestAuth tests user credentials by making a minimal Claude API call.
-func (c *Client) TestAuth(ctx context.Context, userID, credentialsJSON string) (*TestAuthResponse, error) {
+// TestAuth tests user API key by making a minimal Perplexity API call.
+func (c *Client) TestAuth(ctx context.Context, userID, apiKey string) (*TestAuthResponse, error) {
 	reqBody := TestAuthRequest{
-		UserID:          userID,
-		CredentialsJSON: credentialsJSON,
+		UserID: userID,
+		APIKey: apiKey,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -312,107 +263,38 @@ func (c *Client) TestAuth(ctx context.Context, userID, credentialsJSON string) (
 	return &authResp, nil
 }
 
-// OAuthStart initiates the OAuth login flow and returns an authorization URL.
-// The user should visit this URL in their browser to authenticate.
-func (c *Client) OAuthStart(ctx context.Context, userID string) (*OAuthStartResponse, error) {
-	reqBody := OAuthStartRequest{
-		UserID: userID,
-	}
-
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/auth/oauth/start", bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OAuth start failed: %s - %s", resp.Status, string(body))
-	}
-
-	var oauthResp OAuthStartResponse
-	if err := json.NewDecoder(resp.Body).Decode(&oauthResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &oauthResp, nil
+// Chat sends a message to Perplexity and returns the response.
+func (c *Client) Chat(ctx context.Context, portalID, userID, apiKey, message string, systemPrompt, model *string) (*ChatResponse, error) {
+	return c.ChatWithContent(ctx, portalID, userID, apiKey, message, nil, systemPrompt, model, nil)
 }
 
-// OAuthComplete completes the OAuth flow by exchanging the authorization code for credentials.
-func (c *Client) OAuthComplete(ctx context.Context, userID, state, code string) (*OAuthCompleteResponse, error) {
-	reqBody := OAuthCompleteRequest{
-		UserID: userID,
-		State:  state,
-		Code:   code,
+// ChatWithContent sends a message to Perplexity with optional structured content (for images).
+func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, message string, content []ContentBlock, systemPrompt, model *string, webSearchOptions *WebSearchOptions) (*ChatResponse, error) {
+	// Validate required fields early to avoid unnecessary network calls
+	if apiKey == "" {
+		return nil, fmt.Errorf("API key is required")
+	}
+	if portalID == "" {
+		return nil, fmt.Errorf("portal ID is required")
+	}
+	if message == "" && len(content) == 0 {
+		return nil, fmt.Errorf("message or content is required")
 	}
 
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/v1/auth/oauth/complete", bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OAuth complete failed: %s - %s", resp.Status, string(body))
-	}
-
-	var oauthResp OAuthCompleteResponse
-	if err := json.NewDecoder(resp.Body).Decode(&oauthResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &oauthResp, nil
-}
-
-// Chat sends a message to Claude and returns the response.
-// Includes retry logic with exponential backoff and circuit breaker protection.
-// sessionID is the Agent SDK session ID for resuming conversations (stored in bridge DB).
-func (c *Client) Chat(ctx context.Context, portalID, userID, credentialsJSON, message, sessionID string, systemPrompt, model *string) (*ChatResponse, error) {
-	return c.ChatWithContent(ctx, portalID, userID, credentialsJSON, message, nil, sessionID, systemPrompt, model)
-}
-
-// ChatWithContent sends a message to Claude with optional structured content (for images).
-// If content is nil or empty, falls back to text-only message mode.
-// sessionID is the Agent SDK session ID for resuming conversations (stored in bridge DB).
-func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, credentialsJSON, message string, content []ContentBlock, sessionID string, systemPrompt, model *string) (*ChatResponse, error) {
-	// Check circuit breaker
 	if !c.checkCircuit() {
 		return nil, fmt.Errorf("circuit breaker open: sidecar temporarily unavailable")
 	}
 
 	reqBody := ChatRequest{
-		PortalID:        portalID,
-		UserID:          userID,
-		CredentialsJSON: credentialsJSON,
-		Message:         message,
-		Content:         content, // May be nil for text-only
-		SystemPrompt:    systemPrompt,
-		Model:           model,
-		SessionID:       sessionID,
-		Stream:          false,
+		PortalID:         portalID,
+		APIKey:           apiKey,
+		UserID:           userID,
+		Message:          message,
+		Content:          content,
+		SystemPrompt:     systemPrompt,
+		Model:            model,
+		Stream:           false,
+		WebSearchOptions: webSearchOptions,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -473,7 +355,6 @@ func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, credenti
 		}
 		resp.Body.Close()
 
-		// Success - record and return
 		c.recordSuccess()
 
 		c.log.Debug().
@@ -530,7 +411,7 @@ func (c *Client) GetSession(ctx context.Context, portalID string) (*SessionStats
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil // Session doesn't exist
+		return nil, nil
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -546,34 +427,6 @@ func (c *Client) GetSession(ctx context.Context, portalID string) (*SessionStats
 	return &stats, nil
 }
 
-// DeleteUser removes all stored credentials for a user (logout).
-// This should be called when a user logs out from the bridge.
-func (c *Client) DeleteUser(ctx context.Context, userID string) error {
-	req, err := http.NewRequestWithContext(ctx, "DELETE", c.baseURL+"/v1/users/"+userID, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("delete user failed: %s - %s", resp.Status, string(body))
-	}
-
-	c.log.Debug().
-		Str("user_id", userID).
-		Msg("Deleted user credentials from sidecar")
-
-	return nil
-}
-
-// truncate truncates a string to maxLen runes (not bytes).
-// This ensures proper UTF-8 handling and won't split multi-byte characters.
 func truncate(s string, maxLen int) string {
 	runes := []rune(s)
 	if len(runes) <= maxLen {

@@ -1,4 +1,4 @@
-// Package connector provides tests for the Claude bridge connector.
+// Package connector provides tests for the Perplexity bridge connector.
 package connector
 
 import (
@@ -18,16 +18,16 @@ func TestNewConnector(t *testing.T) {
 }
 
 func TestGetName(t *testing.T) {
-	t.Run("returns Claude bridge info", func(t *testing.T) {
+	t.Run("returns Perplexity bridge info", func(t *testing.T) {
 		connector := NewConnector()
 		name := connector.GetName()
 
-		if name.DisplayName != "Claude AI" {
-			t.Errorf("expected DisplayName 'Claude AI', got %q", name.DisplayName)
+		if name.DisplayName != "Perplexity AI" {
+			t.Errorf("expected DisplayName 'Perplexity AI', got %q", name.DisplayName)
 		}
 
-		if name.NetworkID != "claude" {
-			t.Errorf("expected NetworkID 'claude', got %q", name.NetworkID)
+		if name.NetworkID != "perplexity" {
+			t.Errorf("expected NetworkID 'perplexity', got %q", name.NetworkID)
 		}
 
 		if name.NetworkURL == "" {
@@ -41,11 +41,6 @@ func TestGetName(t *testing.T) {
 		if name.DefaultPort == 0 {
 			t.Error("DefaultPort should not be zero")
 		}
-
-		// Should be different from candy bridge port
-		if name.DefaultPort == 29350 {
-			t.Error("DefaultPort should be different from candy bridge")
-		}
 	})
 }
 
@@ -58,7 +53,7 @@ func TestGetLoginFlows(t *testing.T) {
 			t.Fatal("GetLoginFlows returned empty slice")
 		}
 
-		// Should have at least API key flow
+		// Should have API key flow
 		hasAPIKeyFlow := false
 		for _, flow := range flows {
 			if flow.ID == "api_key" {
@@ -147,7 +142,7 @@ func TestGetCapabilities(t *testing.T) {
 			t.Fatal("GetCapabilities returned nil")
 		}
 
-		// Claude doesn't support disappearing messages
+		// Perplexity doesn't support disappearing messages
 		if caps.DisappearingMessages {
 			t.Error("should not support disappearing messages")
 		}
@@ -157,7 +152,7 @@ func TestGetCapabilities(t *testing.T) {
 func TestMetadataStructures(t *testing.T) {
 	t.Run("GhostMetadata has model field", func(t *testing.T) {
 		meta := &GhostMetadata{
-			Model: "claude-3-5-sonnet-20241022",
+			Model: "sonar",
 		}
 
 		if meta.Model == "" {
@@ -169,7 +164,7 @@ func TestMetadataStructures(t *testing.T) {
 		temp := 0.7
 		meta := &PortalMetadata{
 			ConversationName: "Test Chat",
-			Model:            "claude-3-5-sonnet-20241022",
+			Model:            "sonar-pro",
 			SystemPrompt:     "You are helpful",
 			Temperature:      &temp,
 		}
@@ -187,14 +182,14 @@ func TestMetadataStructures(t *testing.T) {
 		}
 	})
 
-	t.Run("MessageMetadata has ClaudeMessageID", func(t *testing.T) {
+	t.Run("MessageMetadata has PerplexityMessageID", func(t *testing.T) {
 		meta := &MessageMetadata{
-			ClaudeMessageID: "msg_123",
-			TokensUsed:      150,
+			PerplexityMessageID: "msg_123",
+			TokensUsed:          150,
 		}
 
-		if meta.ClaudeMessageID == "" {
-			t.Error("ClaudeMessageID should be set")
+		if meta.PerplexityMessageID == "" {
+			t.Error("PerplexityMessageID should be set")
 		}
 
 		if meta.TokensUsed <= 0 {
@@ -204,8 +199,7 @@ func TestMetadataStructures(t *testing.T) {
 
 	t.Run("UserLoginMetadata has APIKey field", func(t *testing.T) {
 		meta := &UserLoginMetadata{
-			APIKey: "sk-ant-test-key",
-			Email:  "user@example.com",
+			APIKey: "pplx-test-key",
 		}
 
 		if meta.APIKey == "" {
@@ -216,15 +210,15 @@ func TestMetadataStructures(t *testing.T) {
 
 func TestImplementsInterfaces(t *testing.T) {
 	t.Run("implements NetworkConnector", func(t *testing.T) {
-		var _ bridgev2.NetworkConnector = (*ClaudeConnector)(nil)
+		var _ bridgev2.NetworkConnector = (*PerplexityConnector)(nil)
 	})
 }
 
-func TestMakeClaudePortalKey(t *testing.T) {
+func TestMakePerplexityPortalKey(t *testing.T) {
 	t.Run("creates portal key from conversation ID without Receiver", func(t *testing.T) {
 		conversationID := "conv_123"
 
-		key := MakeClaudePortalKey(conversationID)
+		key := MakePerplexityPortalKey(conversationID)
 
 		if key.ID == "" {
 			t.Error("portal key ID should not be empty")
@@ -242,11 +236,11 @@ func TestMakeClaudePortalKey(t *testing.T) {
 	})
 }
 
-func TestMakeClaudeMessageID(t *testing.T) {
-	t.Run("creates message ID from Claude message ID", func(t *testing.T) {
-		claudeMessageID := "msg_abc123"
+func TestMakePerplexityMessageID(t *testing.T) {
+	t.Run("creates message ID from Perplexity message ID", func(t *testing.T) {
+		perplexityMessageID := "msg_abc123"
 
-		msgID := MakeClaudeMessageID(claudeMessageID)
+		msgID := MakePerplexityMessageID(perplexityMessageID)
 
 		if msgID == "" {
 			t.Error("message ID should not be empty")

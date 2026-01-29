@@ -1,440 +1,369 @@
-# Feature: Image Upload Support for Sidecar Mode
+# Migration Plan: mautrix-claude → mautrix-perplexity
 
 ## Overview
 
-Add support for sending images to Claude when using sidecar mode (Pro/Max subscription). Currently, images work fine in direct API mode but are **silently dropped** in sidecar mode because the Agent SDK's `query()` function only accepts a string prompt parameter, not structured multimodal content.
+This plan outlines the migration from Claude API to Perplexity API for the Matrix bridge.
 
-## Problem Summary
+### Key Findings from Research
 
-### Current Architecture
-1. **Direct API Mode (Works)**: 
-   - Go bridge sends `claudeapi.Content[]` with text and image blocks
-   - Images passed as base64 via Anthropic API Messages endpoint
-   - Claude Vision processes images correctly
+1. **Perplexity API is publicly available** - No Pro subscription required. Pay-as-you-go credits system.
+2. **OpenAI-compatible API** - Uses same chat completions format as OpenAI
+3. **Official Python SDK exists** - `pip install perplexityai` (version 0.23.0+)
+4. **No sidecar needed** - Direct API access is sufficient (simpler than Claude)
 
-2. **Sidecar Mode (Broken)**:
-   - `extractMessageText()` in `pkg/sidecar/message_client.go:356-368` only extracts text, **silently drops images**
-   - `ChatRequest` struct only has `Message string` field (no image support)
-   - Python sidecar calls `query(prompt=text_string, options=...)` which doesn't support images
+### Architecture Decision
 
-### Root Cause
-The Claude Agent SDK's `query()` function signature is:
-```python
-async def query(prompt: str, options: ClaudeAgentOptions) -> AsyncIterator[Message]
+**Approach: Direct API via Go HTTP Client (OpenAI-compatible)**
+
+Since Perplexity API is:
+- OpenAI-compatible (same request/response format)
+- Publicly accessible with simple API key auth
+- Supports streaming via SSE
+
+We can use a **simpler architecture**:
+- Remove the Python sidecar entirely
+- Implement direct HTTP client in Go
+- Reuse existing conversation management
+
+This is simpler than Claude because:
+- No OAuth flows (just API key)
+- No Pro/Max tier complexity
+- No Agent SDK needed
+- Standard OpenAI format
+
+### Available Models (2025)
+
+| Model | Input Cost | Output Cost | Context |
+|-------|------------|-------------|---------|
+| `sonar` | $1/M | $1/M | 128k |
+| `sonar-pro` | $3/M | $15/M | 200k |
+| `sonar-reasoning` | - | - | 128k |
+| `sonar-reasoning-pro` | - | - | 128k |
+
+## Scope of Changes
+
+### Files to Create
+
+1. **`pkg/perplexityapi/client.go`** (~350 lines)
+   - HTTP client for Perplexity API
+   - Implements `MessageClient` interface
+   - SSE streaming support
+   - OpenAI-compatible request/response handling
+
+2. **`pkg/perplexityapi/types.go`** (~150 lines)
+   - Request/response types (OpenAI format)
+   - Perplexity-specific fields (search_results, web_search_options)
+
+3. **`pkg/perplexityapi/models.go`** (~100 lines)
+   - Model constants and validation
+   - Family resolution (sonar → sonar, etc.)
+
+### Files to Modify
+
+1. **`pkg/connector/config.go`**
+   - Change model validation (sonar family instead of claude)
+   - Add `web_search_options` config
+   - Remove sidecar config (optional, not required)
+
+2. **`pkg/connector/login.go`**
+   - Update API key format validation (`pplx-*` prefix)
+   - Update validation endpoint
+   - Remove OAuth/sidecar login flow
+
+3. **`pkg/connector/connector.go`**
+   - Rename to PerplexityConnector
+   - Update bridge metadata
+   - Update model family handling
+
+4. **`pkg/connector/client.go`**
+   - Use perplexityapi.Client instead of claudeapi.Client
+   - Remove sidecar code paths
+   - Update ghost user handling for new models
+
+5. **`pkg/connector/commands.go`**
+   - Update model list and help text
+   - Update command prefix suggestions
+
+6. **`pkg/connector/queryhandler.go`**
+   - Update model family detection for ghost users
+
+7. **`go.mod`**
+   - Remove anthropic-sdk-go dependency
+   - Module name already correct
+
+8. **`cmd/mautrix-claude/main.go`** → **`cmd/mautrix-perplexity/main.go`**
+   - Rename directory
+   - Update imports and metadata
+
+9. **`example-config.yaml`**
+   - Update default model, command prefix, etc.
+
+### Files to Delete
+
+1. **`pkg/claudeapi/`** - Entire directory (client.go, types.go, models.go, etc.)
+2. **`pkg/sidecar/`** - Entire directory (not needed for Perplexity)
+3. **`sidecar/`** - Python sidecar directory (not needed)
+
+### Files to Keep (with minimal changes)
+
+1. **`pkg/claudeapi/conversations.go`** → Move to connector or keep shared
+   - ConversationManager works for any LLM
+   - Token counting may need adjustment
+
+2. **`pkg/claudeapi/interface.go`** → Move to perplexityapi or shared
+   - MessageClient interface stays the same
+
+3. **`pkg/claudeapi/metrics.go`** → Move to perplexityapi
+   - Prometheus metrics stay similar
+
+## Implementation Phases
+
+### Phase 1: Create perplexityapi Package
+
+**1.1 Create `pkg/perplexityapi/types.go`**
+
+```go
+package perplexityapi
+
+// ChatCompletionRequest follows OpenAI format
+type ChatCompletionRequest struct {
+    Model            string           `json:"model"`
+    Messages         []Message        `json:"messages"`
+    MaxTokens        int              `json:"max_tokens,omitempty"`
+    Temperature      *float64         `json:"temperature,omitempty"`
+    TopP             *float64         `json:"top_p,omitempty"`
+    Stream           bool             `json:"stream,omitempty"`
+    // Perplexity-specific
+    WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
+}
+
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+
+type WebSearchOptions struct {
+    SearchDomainFilter  []string `json:"search_domain_filter,omitempty"`
+    SearchRecencyFilter string   `json:"search_recency_filter,omitempty"`
+}
+
+type ChatCompletionResponse struct {
+    ID      string   `json:"id"`
+    Object  string   `json:"object"`
+    Created int64    `json:"created"`
+    Model   string   `json:"model"`
+    Choices []Choice `json:"choices"`
+    Usage   *Usage   `json:"usage,omitempty"`
+    // Perplexity-specific
+    SearchResults []SearchResult `json:"search_results,omitempty"`
+}
+
+type Choice struct {
+    Index        int      `json:"index"`
+    Message      *Message `json:"message,omitempty"`
+    Delta        *Message `json:"delta,omitempty"`
+    FinishReason string   `json:"finish_reason,omitempty"`
+}
+
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    TotalTokens      int `json:"total_tokens"`
+}
+
+type SearchResult struct {
+    Title string `json:"title"`
+    URL   string `json:"url"`
+    Date  string `json:"date,omitempty"`
+}
 ```
 
-The `prompt` parameter is a **string**, not structured content. The Agent SDK likely doesn't expose multimodal input in its high-level API.
+**1.2 Create `pkg/perplexityapi/client.go`**
 
-## Requirements
+```go
+package perplexityapi
 
-- [ ] **REQ-1**: Pass image data from Go bridge to Python sidecar
-- [ ] **REQ-2**: Determine if Agent SDK supports images (investigation needed)
-- [ ] **REQ-3**: If Agent SDK doesn't support images, provide clear error message to user
-- [ ] **REQ-4**: If Agent SDK supports images via undocumented method, implement it
-- [ ] **REQ-5**: Maintain backward compatibility with text-only messages
-- [ ] **REQ-6**: Add comprehensive tests for image handling
+import (
+    "bufio"
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+    "strings"
+)
 
-## Investigation Phase - COMPLETED
+const (
+    BaseURL = "https://api.perplexity.ai"
+)
 
-### Step 1: Research Agent SDK Image Support
-**Status**: ✅ COMPLETED
-**Finding**: **Agent SDK DOES support images via Streaming Input Mode**
+type Client struct {
+    apiKey     string
+    httpClient *http.Client
+    baseURL    string
+    metrics    *Metrics
+}
 
-According to the official documentation at https://platform.claude.com/docs/en/agent-sdk/streaming-vs-single-mode:
-
-The Agent SDK supports images through **streaming input mode** using `ClaudeSDKClient`:
-
-```python
-async def message_generator():
-    yield {
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "Review this architecture diagram"
-                },
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/png",
-                        "data": image_data  # base64 encoded
-                    }
-                }
-            ]
-        }
+func NewClient(apiKey string) *Client {
+    return &Client{
+        apiKey:     apiKey,
+        httpClient: &http.Client{},
+        baseURL:    BaseURL,
+        metrics:    NewMetrics(),
     }
+}
 
-async with ClaudeSDKClient(options) as client:
-    await client.query(message_generator())
+func (c *Client) CreateMessage(ctx context.Context, req *CreateMessageRequest) (*CreateMessageResponse, error) {
+    // Implementation
+}
+
+func (c *Client) CreateMessageStream(ctx context.Context, req *CreateMessageRequest) (<-chan StreamEvent, error) {
+    // SSE streaming implementation
+}
+
+func (c *Client) Validate(ctx context.Context) error {
+    // Make minimal request to validate API key
+}
 ```
 
-**IMPORTANT LIMITATIONS**:
-- Images are **NOT supported** with the simple `query()` function (single message input)
-- Images **ARE supported** with `ClaudeSDKClient` and async generator input
-- The sidecar must use streaming input mode to support images
+**1.3 Create `pkg/perplexityapi/models.go`**
 
-**Decision**: Proceed with **Implementation Option A** - Full image support via streaming input
+```go
+package perplexityapi
 
-## Implementation Options
+var ValidModels = map[string]bool{
+    "sonar":               true,
+    "sonar-pro":           true,
+    "sonar-reasoning":     true,
+    "sonar-reasoning-pro": true,
+}
 
-### Option A: Agent SDK Supports Images (Best Case)
+var ModelFamilies = []string{"sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro"}
 
-If the Agent SDK provides image support (e.g., via `content` blocks or special fields):
+func GetModelFamily(modelID string) string {
+    id := strings.ToLower(modelID)
+    switch {
+    case strings.HasPrefix(id, "sonar-reasoning-pro"):
+        return "sonar-reasoning-pro"
+    case strings.HasPrefix(id, "sonar-reasoning"):
+        return "sonar-reasoning"
+    case strings.HasPrefix(id, "sonar-pro"):
+        return "sonar-pro"
+    case strings.HasPrefix(id, "sonar"):
+        return "sonar"
+    default:
+        return "sonar"
+    }
+}
+```
 
-#### Backend Changes (Go)
+### Phase 2: Update Connector Package
 
-**File: `/mnt/data/git/mautrix-claude/pkg/sidecar/client.go`**
-- [ ] Update `ChatRequest` struct to include image content:
-  ```go
-  type ChatRequest struct {
-      PortalID        string              `json:"portal_id"`
-      UserID          string              `json:"user_id,omitempty"`
-      CredentialsJSON string              `json:"credentials_json,omitempty"`
-      Message         string              `json:"message"`           // Keep for backward compat
-      Content         []ContentBlock      `json:"content,omitempty"` // NEW: structured content
-      SystemPrompt    *string             `json:"system_prompt,omitempty"`
-      Model           *string             `json:"model,omitempty"`
-      SessionID       string              `json:"session_id,omitempty"`
-      Stream          bool                `json:"stream"`
-  }
-  
-  type ContentBlock struct {
-      Type      string       `json:"type"`              // "text" or "image"
-      Text      string       `json:"text,omitempty"`    // For text blocks
-      Source    *ImageSource `json:"source,omitempty"`  // For image blocks
-  }
-  
-  type ImageSource struct {
-      Type      string `json:"type"`       // "base64"
-      MediaType string `json:"media_type"` // "image/jpeg", etc.
-      Data      string `json:"data"`       // Base64 encoded
-  }
-  ```
+**2.1 Update `pkg/connector/config.go`**
 
-**File: `/mnt/data/git/mautrix-claude/pkg/sidecar/message_client.go`**
-- [ ] Update `extractMessageText()` to `extractMessageContent()`:
-  ```go
-  // extractMessageContent extracts structured content from messages
-  func extractMessageContent(messages []claudeapi.Message) (string, []ContentBlock, error) {
-      // Extract last user message
-      for i := len(messages) - 1; i >= 0; i-- {
-          if messages[i].Role == "user" {
-              var textParts []string
-              var contentBlocks []ContentBlock
-              
-              for _, content := range messages[i].Content {
-                  switch content.Type {
-                  case "text":
-                      textParts = append(textParts, content.Text)
-                      contentBlocks = append(contentBlocks, ContentBlock{
-                          Type: "text",
-                          Text: content.Text,
-                      })
-                  case "image":
-                      if content.Source != nil {
-                          contentBlocks = append(contentBlocks, ContentBlock{
-                              Type: "image",
-                              Source: &ImageSource{
-                                  Type:      content.Source.Type,
-                                  MediaType: content.Source.MediaType,
-                                  Data:      content.Source.Data,
-                              },
-                          })
-                      }
-                  }
-              }
-              
-              // Return both text (for backward compat) and structured content
-              return strings.Join(textParts, "\n"), contentBlocks, nil
-          }
-      }
-      return "", nil, fmt.Errorf("no user message found")
-  }
-  ```
+- Remove sidecar config (or make optional)
+- Update model validation for Perplexity models
+- Add web_search_options config
 
-- [ ] Update `CreateMessageStream()` to use `extractMessageContent()` and populate both `Message` (text) and `Content` (structured) fields in `ChatRequest`
+**2.2 Update `pkg/connector/login.go`**
 
-#### Frontend Changes (Python)
+- Simplify to API key only (no OAuth)
+- Validate key format: `pplx-*`
+- Use perplexityapi.Client.Validate()
 
-**File: `/mnt/data/git/mautrix-claude/sidecar/main.py`**
-- [ ] Update `ChatRequest` model to include content:
-  ```python
-  class ContentBlock(BaseModel):
-      type: str  # "text" or "image"
-      text: Optional[str] = None
-      source: Optional[dict] = None  # {type, media_type, data}
-  
-  class ChatRequest(BaseModel):
-      portal_id: str
-      user_id: Optional[str] = None
-      credentials_json: Optional[str] = None
-      message: str  # Kept for backward compatibility
-      content: Optional[list[ContentBlock]] = None  # NEW
-      system_prompt: Optional[str] = None
-      model: Optional[str] = None
-      session_id: Optional[str] = None
-      stream: bool = False
-  ```
+**2.3 Update `pkg/connector/connector.go`**
 
-- [ ] Update `/v1/chat` endpoint to handle images:
-  ```python
-  @app.post("/v1/chat", response_model=ChatResponse)
-  async def chat(request: ChatRequest):
-      # ... existing code ...
-      
-      # Build prompt based on content type
-      if request.content and any(block.type == "image" for block in request.content):
-          # Has images - check if SDK supports it
-          try:
-              # Attempt to pass structured content to Agent SDK
-              # (Implementation depends on SDK API discovered in investigation)
-              query_result = await _run_query_with_multimodal_content(
-                  content=request.content,
-                  options=options,
-                  timeout_seconds=QUERY_TIMEOUT,
-                  portal_id=request.portal_id,
-              )
-          except NotImplementedError:
-              # Agent SDK doesn't support images
-              raise HTTPException(
-                  status_code=400,
-                  detail="Image uploads are not supported in sidecar mode with the current Agent SDK version. Use direct API mode for image support."
-              )
-      else:
-          # Text-only - use existing code path
-          query_result = await _run_query_with_timeout(...)
-  ```
+- Rename ClaudeConnector → PerplexityConnector
+- Update GetName() metadata
+- Update model family handling
 
-#### Error Handling
-- [ ] If Agent SDK doesn't support images at runtime, return clear error
-- [ ] Go bridge should catch this error and display to user
-- [ ] Add `pkg/connector/client.go:formatUserFriendlyError()` case for image errors
+**2.4 Update `pkg/connector/client.go`**
 
-### Option B: Agent SDK Does NOT Support Images (Graceful Degradation)
+- Replace claudeapi.Client with perplexityapi.Client
+- Remove sidecar code paths
+- Update message handling for OpenAI format
 
-If Agent SDK has no image support:
+### Phase 3: Clean Up
 
-#### Backend Changes (Go)
+**3.1 Delete old packages**
+```bash
+rm -rf pkg/claudeapi/
+rm -rf pkg/sidecar/
+rm -rf sidecar/
+```
 
-**File: `/mnt/data/git/mautrix-claude/pkg/connector/client.go`**
-- [ ] Add check in `HandleMatrixMessage()` before sending to sidecar:
-  ```go
-  // Check if message has images and we're in sidecar mode
-  if isSidecarMode && msg.Content.MsgType == event.MsgImage {
-      errMsg := "Image uploads are not supported in sidecar mode (Pro/Max subscription). " +
-               "To use Claude Vision with images, switch to API mode with an API key. " +
-               "You can configure this in the bridge settings."
-      c.sendErrorToRoom(ctx, msg.Portal, errMsg)
-      return nil, errors.New(errMsg)
-  }
-  
-  // Also check for images in text messages
-  if isSidecarMode {
-      hasImages := false
-      for _, content := range messageContent {
-          if content.Type == "image" {
-              hasImages = true
-              break
-          }
-      }
-      if hasImages {
-          errMsg := "Image uploads are not supported in sidecar mode..."
-          c.sendErrorToRoom(ctx, msg.Portal, errMsg)
-          return nil, errors.New(errMsg)
-      }
-  }
-  ```
+**3.2 Rename cmd directory**
+```bash
+mv cmd/mautrix-claude cmd/mautrix-perplexity
+```
 
-#### Documentation
-- [ ] Update `/mnt/data/git/mautrix-claude/sidecar/README.md` to document limitation:
-  ```markdown
-  ## Limitations
-  
-  ### Image Support
-  
-  Image uploads are currently **not supported** in sidecar mode due to Agent SDK limitations. 
-  If you need to use Claude Vision with images, use direct API mode instead:
-  
-  1. Obtain an Anthropic API key from https://console.anthropic.com
-  2. Configure the bridge to use API mode instead of sidecar
-  3. Images will work via the Messages API
-  ```
+**3.3 Update go.mod**
+- Remove anthropic-sdk-go
+- Run `go mod tidy`
 
-### Option C: Hybrid Approach (Direct API Fallback for Images)
+### Phase 4: Update Configuration & Documentation
 
-If we want the best of both worlds:
+**4.1 Update `example-config.yaml`**
+```yaml
+network:
+  default_model: sonar
+  max_tokens: 4096
+  # ... rest of config
+```
 
-**Architecture**:
-- Text-only messages: Use sidecar (Pro/Max subscription)
-- Messages with images: Fall back to direct API (costs API credits)
+**4.2 Update README.md**
 
-**Pros**: Users can use images when needed, text-only uses subscription
-**Cons**: Mixed costs, complexity, potential user confusion
+**4.3 Update Dockerfile if exists**
 
-#### Implementation
-- [ ] Add `api_fallback_for_images` config option
-- [ ] Check message type in `HandleMatrixMessage()`
-- [ ] If images detected and `api_fallback_for_images=true`, use direct API client
-- [ ] Send notice to user: "Note: This image message will use API credits instead of your subscription"
+### Phase 5: Testing
 
-## Testing Strategy
+**5.1 Unit Tests**
+- Test perplexityapi client
+- Test config validation
+- Test model resolution
 
-### Unit Tests
+**5.2 Integration Tests**
+- Test full message flow
+- Test streaming
+- Test error handling
 
-**File: `/mnt/data/git/mautrix-claude/pkg/sidecar/message_client_test.go`**
-- [ ] Test `extractMessageContent()` with:
-  - Text-only message (existing behavior)
-  - Image-only message
-  - Image + text caption
-  - Multiple images with text
-  - Empty content
-  - Mixed content blocks
-
-**File: `/mnt/data/git/mautrix-claude/pkg/connector/client_test.go`**
-- [ ] Test `HandleMatrixMessage()` with image in sidecar mode
-- [ ] Verify error is sent to room
-- [ ] Verify no silent failures
-
-### Integration Tests
-
-**File: `/mnt/data/git/mautrix-claude/pkg/sidecar/integration_test.go`**
-- [ ] Test end-to-end image flow (if supported)
-- [ ] Test error response from Python sidecar for images
-- [ ] Test that text messages still work
-
-**File: `/mnt/data/git/mautrix-claude/sidecar/test_main.py`** (create new)
-- [ ] Test ChatRequest validation with images
-- [ ] Test `/v1/chat` endpoint with image content
-- [ ] Test error handling when Agent SDK doesn't support images
-
-### Manual Testing Checklist
-- [ ] Send text message in sidecar mode (should work)
-- [ ] Upload image in sidecar mode (should show clear error OR work if implemented)
-- [ ] Upload image in API mode (should work)
-- [ ] Send image with caption in sidecar mode
-- [ ] Test with different image formats (JPEG, PNG, GIF, WebP)
-- [ ] Test with large images (>5MB)
-
-## Risk Assessment
-
-### Breaking Changes
-- **None** - All changes are additive or error improvements
-- Existing text-only sidecar functionality remains unchanged
-- API mode unchanged
-
-### Performance Considerations
-- **Image size**: Base64 encoding adds ~33% overhead
-  - Mitigation: Enforce 5MB limit (existing in API mode)
-- **Token usage**: Images consume significant tokens
-  - Mitigation: Already tracked in API mode, extend to sidecar
-
-### Security Considerations
-- **SECURITY-CRITICAL**: Validate image size before base64 encoding
-- **SECURITY-CRITICAL**: Validate MIME types (already done in `isImageSupported()`)
-- **SECURITY-CRITICAL**: Ensure per-user credentials are used (already implemented)
-
-### Edge Cases
-- [ ] User sends image while sidecar is down → fallback to API mode?
-- [ ] Image download fails from Matrix → show error
-- [ ] Image too large → show error with size limit
-- [ ] Unsupported image format → show error with supported formats
-- [ ] Agent SDK timeout with large image → increase timeout or show error
-
-## Dependencies
-
-### External
-- **Claude Agent SDK**: Need to verify image support
-  - If no support, need to wait for SDK update OR accept limitation
-- **Python sidecar**: Must be running and authenticated
-
-### Internal
-- **Existing**: `downloadAndEncodeImage()` in `connector/client.go` (already implemented)
-- **Existing**: `supportedImageTypes` validation (already implemented)
-- **Existing**: Sidecar authentication and session management (already implemented)
-
-## Estimated Complexity
-
-### Backend (Go)
-- **Low** if Agent SDK doesn't support (just add error handling)
-- **Medium** if Agent SDK supports (update data structures, content extraction)
-
-### Frontend (Python)
-- **Low** if Agent SDK doesn't support (just validate and return error)
-- **High** if Agent SDK supports but requires workarounds (custom API calls)
-
-### Testing
-- **Medium**: Need comprehensive coverage of image handling
-
-### Overall
-- **Best Case** (Option B - graceful error): **Low** (2-4 hours)
-- **Typical Case** (Option A - SDK supports): **Medium** (1-2 days)
-- **Worst Case** (Option C - hybrid fallback): **High** (3-5 days)
-
-## Implementation Order
-
-### Phase 1: Investigation (REQUIRED FIRST)
-1. Research Agent SDK image support capabilities
-2. Document findings in this plan
-3. Choose implementation option (A, B, or C)
-
-### Phase 2: Backend Changes (Go)
-1. Update `ChatRequest` struct (if Option A)
-2. Implement `extractMessageContent()` (if Option A)
-3. Add error handling in `HandleMatrixMessage()` (all options)
-4. Write unit tests
-
-### Phase 3: Frontend Changes (Python)
-1. Update `ChatRequest` model (if Option A)
-2. Implement image handling in `/v1/chat` endpoint (if Option A)
-3. Add validation and error messages (all options)
-4. Write Python tests
-
-### Phase 4: Integration & Testing
-1. Run integration tests
-2. Manual testing with real images
-3. Performance testing with large images
-4. Documentation updates
-
-### Phase 5: Documentation & Rollout
-1. Update README.md with image support status
-2. Update user-facing docs
-3. Add migration notes if needed
-4. Deploy and monitor
-
-## Next Steps
-
-**IMMEDIATE ACTION REQUIRED**:
-1. **Investigate Agent SDK** - Determine if multimodal support exists
-2. Based on findings, update this plan with chosen option
-3. Get approval for implementation approach
-4. Proceed with implementation
-
-**Recommended Approach**:
-Start with **Option B** (graceful error) as it's:
-- Quickest to implement (2-4 hours)
-- No risk of breaking existing functionality
-- Provides clear user experience
-- Can be upgraded to Option A later if SDK adds support
-
-Then monitor Agent SDK releases and upgrade to Option A when support is added.
-
-## Open Questions
-
-1. **Agent SDK Image Support**: Does it exist? (MUST ANSWER FIRST)
-2. **User Preference**: Would users prefer Option C (hybrid) over Option B (clear error)?
-3. **Fallback Strategy**: Should we auto-fallback to API mode or require explicit user action?
-4. **Token Accounting**: How to estimate image token usage in sidecar mode?
-5. **Multiple Images**: Does Agent SDK support multiple images per message?
+**5.3 Manual Testing**
+- Build and run
+- Login with Perplexity API key
+- Send messages
+- Verify responses
 
 ## Success Criteria
 
-- [ ] Users see clear error when uploading images in sidecar mode (if not supported)
-- [ ] OR images work correctly in sidecar mode (if supported)
-- [ ] No silent failures or dropped images
-- [ ] Existing text-only functionality unchanged
-- [ ] All tests passing
-- [ ] Documentation updated
-- [ ] Performance acceptable for typical images (< 5MB)
+- [ ] Bridge starts without errors
+- [ ] Login with Perplexity API key works
+- [ ] Messages are sent and responses received
+- [ ] Streaming works correctly
+- [ ] Model switching works
+- [ ] Ghost users appear with correct names
+- [ ] All existing tests pass (with updates)
+- [ ] No Claude-specific code remains
+
+## Migration Notes
+
+### For Existing Users
+
+If migrating from mautrix-claude:
+1. Get a Perplexity API key from https://www.perplexity.ai/settings/api
+2. Re-login with the new API key
+3. Update config file (model names, command prefix)
+
+### Breaking Changes
+
+- Model families change: `sonnet/opus/haiku` → `sonar/sonar-pro/sonar-reasoning/sonar-reasoning-pro`
+- API key format changes: `sk-ant-*` → `pplx-*`
+- Command prefix suggested change: `!claude` → `!perplexity`
+- Sidecar no longer needed
+
+## Sources
+
+- [Perplexity API Documentation](https://docs.perplexity.ai/)
+- [Perplexity Pricing](https://docs.perplexity.ai/getting-started/pricing)
+- [OpenAI Compatibility Guide](https://docs.perplexity.ai/guides/chat-completions-guide)
+- [Perplexity Python SDK](https://github.com/perplexityai/perplexity-py)

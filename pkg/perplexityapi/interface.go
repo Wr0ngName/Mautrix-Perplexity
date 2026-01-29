@@ -1,11 +1,11 @@
-// Package claudeapi provides a wrapper around the official Anthropic Go SDK.
-package claudeapi
+// Package perplexityapi provides types and interfaces for the Perplexity API.
+package perplexityapi
 
 import (
 	"context"
 )
 
-// MessageClient is the interface for sending messages to Claude.
+// MessageClient is the interface for sending messages to Perplexity.
 type MessageClient interface {
 	// CreateMessageStream sends a message and returns a channel of streaming events.
 	CreateMessageStream(ctx context.Context, req *CreateMessageRequest) (<-chan StreamEvent, error)
@@ -25,5 +25,5 @@ type MessageClient interface {
 
 // ClientType constant.
 const (
-	ClientTypeAPI = "api"
+	ClientTypeSidecar = "sidecar"
 )

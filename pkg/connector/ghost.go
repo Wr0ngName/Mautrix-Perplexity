@@ -3,16 +3,17 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 
-	"go.mau.fi/mautrix-claude/pkg/claudeapi"
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
 
 // GetOrUpdateGhost gets a ghost by ID and ensures its metadata is properly populated.
 // This fixes the issue where ghosts are created with empty Model metadata.
-func (c *ClaudeConnector) GetOrUpdateGhost(ctx context.Context, ghostID networkid.UserID, model string) (*bridgev2.Ghost, error) {
+func (c *PerplexityConnector) GetOrUpdateGhost(ctx context.Context, ghostID networkid.UserID, model string) (*bridgev2.Ghost, error) {
 	ghost, err := c.br.GetGhostByID(ctx, ghostID)
 	if err != nil {
 		return nil, err
@@ -38,8 +39,8 @@ func (c *ClaudeConnector) GetOrUpdateGhost(ctx context.Context, ghostID networki
 	return ghost, nil
 }
 
-// GetUserInfo returns information about a ghost user (Claude model).
-func (c *ClaudeClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
+// GetUserInfo returns information about a ghost user (Perplexity model).
+func (c *PerplexityClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
 	meta, ok := ghost.Metadata.(*GhostMetadata)
 	if !ok || meta == nil {
 		return nil, fmt.Errorf("invalid ghost metadata")
@@ -47,17 +48,18 @@ func (c *ClaudeClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (
 
 	modelName := meta.Model
 	if modelName == "" {
-		// Try to derive from ghost ID (ghost ID is the model family like "sonnet")
+		// Try to derive from ghost ID (ghost ID is the model family like "sonar")
 		modelName = string(ghost.ID)
 		if modelName == "" {
 			modelName = c.Connector.Config.GetDefaultModel()
 		}
 	}
-	displayName := fmt.Sprintf("Claude (%s)", modelName)
 
-	// Get model info for better display name
-	if info := claudeapi.GetModelInfo(modelName); info != nil && info.DisplayName != "" {
-		displayName = info.DisplayName
+	// Create display name from model
+	displayName := fmt.Sprintf("Perplexity (%s)", modelName)
+	family := perplexityapi.GetModelFamily(modelName)
+	if family != "" {
+		displayName = fmt.Sprintf("Perplexity %s", strings.Title(strings.ReplaceAll(family, "-", " ")))
 	}
 
 	isBot := true
@@ -65,6 +67,6 @@ func (c *ClaudeClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (
 	return &bridgev2.UserInfo{
 		Name:        &displayName,
 		IsBot:       &isBot,
-		Identifiers: []string{fmt.Sprintf("claude:%s", modelName)},
+		Identifiers: []string{fmt.Sprintf("perplexity:%s", modelName)},
 	}, nil
 }

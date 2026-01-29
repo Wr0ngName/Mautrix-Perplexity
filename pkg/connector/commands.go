@@ -6,66 +6,31 @@ import (
 	"strings"
 	"time"
 
-	"go.mau.fi/mautrix-claude/pkg/claudeapi"
-	"go.mau.fi/mautrix-claude/pkg/sidecar"
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
+	"go.mau.fi/mautrix-perplexity/pkg/sidecar"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/matrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
-// resolveModelArg resolves a model argument (opus, sonnet, haiku, or full ID) to the actual model ID.
-// For sidecar mode, it returns the family name. For API mode, it resolves to the latest version.
-func (c *ClaudeConnector) resolveModelArg(ctx context.Context, ce *commands.Event, modelArg string) (string, error) {
-	isSidecar := c.isSidecarLogin(ce)
+// resolveModelArg resolves a model argument (sonar, sonar-pro, etc.) to the actual model ID.
+func (c *PerplexityConnector) resolveModelArg(ctx context.Context, ce *commands.Event, modelArg string) (string, error) {
 	modelArg = strings.ToLower(modelArg)
 
 	switch modelArg {
-	case "opus", "claude-opus":
-		if isSidecar {
-			return "opus", nil
-		}
-		apiKey := c.getAPIKeyFromLogin(ce)
-		if apiKey == "" {
-			return "", fmt.Errorf("failed to get API credentials")
-		}
-		return claudeapi.GetLatestModelByFamilyFromAPI(ctx, apiKey, "opus")
-
-	case "sonnet", "claude-sonnet":
-		if isSidecar {
-			return "sonnet", nil
-		}
-		apiKey := c.getAPIKeyFromLogin(ce)
-		if apiKey == "" {
-			return "", fmt.Errorf("failed to get API credentials")
-		}
-		return claudeapi.GetLatestModelByFamilyFromAPI(ctx, apiKey, "sonnet")
-
-	case "haiku", "claude-haiku":
-		if isSidecar {
-			return "haiku", nil
-		}
-		apiKey := c.getAPIKeyFromLogin(ce)
-		if apiKey == "" {
-			return "", fmt.Errorf("failed to get API credentials")
-		}
-		return claudeapi.GetLatestModelByFamilyFromAPI(ctx, apiKey, "haiku")
-
+	case "sonar", "perplexity":
+		return perplexityapi.ModelSonar, nil
+	case "sonar-pro", "pro":
+		return perplexityapi.ModelSonarPro, nil
+	case "sonar-reasoning", "reasoning":
+		return perplexityapi.ModelSonarReasoning, nil
+	case "sonar-reasoning-pro", "reasoning-pro":
+		return perplexityapi.ModelSonarReasoningPro, nil
 	default:
 		// Validate model ID format
 		if err := ValidateModelID(modelArg); err != nil {
 			return "", fmt.Errorf("invalid model ID: %w", err)
-		}
-
-		// For API mode, validate the model exists
-		if !isSidecar {
-			apiKey := c.getAPIKeyFromLogin(ce)
-			if apiKey == "" {
-				return "", fmt.Errorf("failed to get API credentials")
-			}
-			if err := claudeapi.ValidateModel(ctx, apiKey, modelArg); err != nil {
-				return "", fmt.Errorf("invalid model: %w", err)
-			}
 		}
 		return modelArg, nil
 	}
@@ -74,12 +39,12 @@ func (c *ClaudeConnector) resolveModelArg(ctx context.Context, ce *commands.Even
 // swapGhosts ensures the correct ghost is in the room for the new model.
 // If oldModel and newModel have different families, the old ghost is removed.
 // The new ghost is always ensured to be in the room.
-func (c *ClaudeConnector) swapGhosts(ctx context.Context, roomID id.RoomID, oldModel, newModel string) error {
-	oldFamily := claudeapi.GetModelFamily(oldModel)
-	newFamily := claudeapi.GetModelFamily(newModel)
+func (c *PerplexityConnector) swapGhosts(ctx context.Context, roomID id.RoomID, oldModel, newModel string) error {
+	oldFamily := perplexityapi.GetModelFamily(oldModel)
+	newFamily := perplexityapi.GetModelFamily(newModel)
 	familyChanged := oldFamily != newFamily
 
-	newGhostID := c.MakeClaudeGhostID(newModel)
+	newGhostID := c.MakePerplexityGhostID(newModel)
 
 	// Get the new ghost and ensure it joins the room
 	newGhost, err := c.GetOrUpdateGhost(ctx, newGhostID, newModel)
@@ -100,7 +65,7 @@ func (c *ClaudeConnector) swapGhosts(ctx context.Context, roomID id.RoomID, oldM
 
 	// Only remove old ghost if family changed
 	if familyChanged {
-		oldGhostID := c.MakeClaudeGhostID(oldModel)
+		oldGhostID := c.MakePerplexityGhostID(oldModel)
 
 		// Have the old ghost leave the room
 		oldGhost, err := c.br.GetExistingGhostByID(ctx, oldGhostID)
@@ -128,8 +93,8 @@ func (c *ClaudeConnector) swapGhosts(ctx context.Context, roomID id.RoomID, oldM
 	return nil
 }
 
-// RegisterCommands registers custom commands for the Claude AI bridge.
-func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
+// RegisterCommands registers custom commands for the Perplexity AI bridge.
+func (c *PerplexityConnector) RegisterCommands(proc *commands.Processor) {
 	proc.AddHandlers(
 		&commands.FullHandler{
 			Func:    c.cmdJoin,
@@ -137,7 +102,7 @@ func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
 			Aliases: []string{"add", "invite"},
 			Help: commands.HelpMeta{
 				Section:     commands.HelpSectionGeneral,
-				Description: "Add Claude to the current room (creates a bridge portal)",
+				Description: "Add Perplexity to the current room (creates a bridge portal)",
 				Args:        "[model]",
 			},
 			RequiresLogin:  true,
@@ -149,7 +114,7 @@ func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
 			Aliases: []string{"set-model", "switch-model"},
 			Help: commands.HelpMeta{
 				Section:     commands.HelpSectionGeneral,
-				Description: "View or change the Claude model for this conversation",
+				Description: "View or change the Perplexity model for this conversation",
 				Args:        "[model-name]",
 			},
 			RequiresLogin:  true,
@@ -161,7 +126,7 @@ func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
 			Aliases: []string{"list-models"},
 			Help: commands.HelpMeta{
 				Section:     commands.HelpSectionGeneral,
-				Description: "List available Claude models",
+				Description: "List available Perplexity models",
 			},
 			RequiresLogin: true,
 		},
@@ -205,7 +170,7 @@ func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
 			Aliases: []string{"temp", "set-temp"},
 			Help: commands.HelpMeta{
 				Section:     commands.HelpSectionGeneral,
-				Description: "View or set the temperature (0-1) for this conversation",
+				Description: "View or set the temperature (0-2) for this conversation",
 				Args:        "[value]",
 			},
 			RequiresLogin:  true,
@@ -217,7 +182,7 @@ func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
 			Aliases: []string{"mentions", "mention-only"},
 			Help: commands.HelpMeta{
 				Section:     commands.HelpSectionGeneral,
-				Description: "Toggle mention-only mode (Claude only responds when @mentioned)",
+				Description: "Toggle mention-only mode (Perplexity only responds when @mentioned)",
 				Args:        "[on|off]",
 			},
 			RequiresLogin:  true,
@@ -237,7 +202,7 @@ func (c *ClaudeConnector) RegisterCommands(proc *commands.Processor) {
 }
 
 // getAPIKeyFromLogin extracts the API key from a user login.
-func (c *ClaudeConnector) getAPIKeyFromLogin(ce *commands.Event) string {
+func (c *PerplexityConnector) getAPIKeyFromLogin(ce *commands.Event) string {
 	login := ce.User.GetDefaultLogin()
 	if login == nil {
 		return ""
@@ -249,23 +214,10 @@ func (c *ClaudeConnector) getAPIKeyFromLogin(ce *commands.Event) string {
 	return meta.APIKey
 }
 
-// isSidecarLogin checks if the user is logged in via sidecar (Pro/Max subscription).
-func (c *ClaudeConnector) isSidecarLogin(ce *commands.Event) bool {
-	login := ce.User.GetDefaultLogin()
-	if login == nil {
-		return false
-	}
-	meta, ok := login.Metadata.(*UserLoginMetadata)
-	if !ok || meta == nil {
-		return false
-	}
-	return meta.CredentialsJSON != "" && meta.APIKey == ""
-}
-
-// cmdModel views or changes the Claude model for a conversation.
-func (c *ClaudeConnector) cmdModel(ce *commands.Event) {
+// cmdModel views or changes the Perplexity model for a conversation.
+func (c *PerplexityConnector) cmdModel(ce *commands.Event) {
 	if ce.Portal == nil {
-		ce.Reply("This command must be run in a Claude conversation room.")
+		ce.Reply("This command must be run in a Perplexity conversation room.")
 		return
 	}
 
@@ -285,15 +237,9 @@ func (c *ClaudeConnector) cmdModel(ce *commands.Event) {
 		var sb strings.Builder
 		sb.WriteString(fmt.Sprintf("**Current model:** `%s`\n\n", currentModel))
 
-		// Try to get display name from cache
-		displayName := claudeapi.GetModelDisplayName(currentModel)
-		if displayName != currentModel {
-			sb.WriteString(fmt.Sprintf("**Name:** %s\n", displayName))
-		}
-
-		inputTokens, outputTokens := claudeapi.EstimateMaxTokens(currentModel)
-		sb.WriteString(fmt.Sprintf("**Max input tokens:** %d\n", inputTokens))
-		sb.WriteString(fmt.Sprintf("**Max output tokens:** %d\n", outputTokens))
+		// Get context size for the model
+		contextSize := perplexityapi.GetContextSize(currentModel)
+		sb.WriteString(fmt.Sprintf("**Context window:** %d tokens\n", contextSize))
 
 		sb.WriteString("\nUse `model <name>` to change. Run `models` to see available options.")
 		ce.Reply(sb.String())
@@ -332,101 +278,58 @@ func (c *ClaudeConnector) cmdModel(ce *commands.Event) {
 		}
 	}
 
-	displayName := claudeapi.GetModelDisplayName(newModel)
-	if displayName != newModel {
-		ce.Reply("Model changed to **%s** (`%s`)", displayName, newModel)
-	} else {
-		ce.Reply("Model changed to `%s`", newModel)
-	}
+	ce.Reply("Model changed to `%s`", newModel)
 }
 
-// cmdModels lists available Claude models by querying the API.
-func (c *ClaudeConnector) cmdModels(ce *commands.Event) {
-	// For sidecar mode, just show the available families
-	if c.isSidecarLogin(ce) {
-		ce.Reply("**Available Claude Models (Pro/Max):**\n\n" +
-			"**Opus:**\n• `opus` - Claude Opus (most capable)\n\n" +
-			"**Sonnet:**\n• `sonnet` - Claude Sonnet (balanced)\n\n" +
-			"**Haiku:**\n• `haiku` - Claude Haiku (fastest)\n\n" +
-			"Use `model <name>` to switch models.")
-		return
-	}
-
-	// Get API key
-	apiKey := c.getAPIKeyFromLogin(ce)
-	if apiKey == "" {
-		ce.Reply("Failed to get API credentials.")
-		return
-	}
-
-	// Fetch models from API
-	ctx, cancel := context.WithTimeout(ce.Ctx, 15*time.Second)
-	defer cancel()
-
-	models, err := claudeapi.FetchModels(ctx, apiKey)
-	if err != nil {
-		ce.Reply("Failed to fetch models from API: %v", err)
-		return
-	}
-
-	if len(models) == 0 {
-		ce.Reply("No models available.")
-		return
-	}
-
+// cmdModels lists available Perplexity models.
+func (c *PerplexityConnector) cmdModels(ce *commands.Event) {
 	var sb strings.Builder
-	sb.WriteString("**Available Claude Models:**\n\n")
+	sb.WriteString("**Available Perplexity Models:**\n\n")
 
 	defaultModel := c.Config.GetDefaultModel()
 
-	// Group by family
-	families := map[string][]claudeapi.ModelInfo{
-		"opus":   {},
-		"sonnet": {},
-		"haiku":  {},
-		"other":  {},
+	sb.WriteString("**Sonar:**\n")
+	sb.WriteString(fmt.Sprintf("• `sonar` - Perplexity Sonar (fast, cost-effective)"))
+	if defaultModel == perplexityapi.ModelSonar {
+		sb.WriteString(" *(default)*")
 	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  Context: %dk tokens\n\n", perplexityapi.ModelContextSizes[perplexityapi.ModelSonar]/1000))
 
-	for _, model := range models {
-		family := model.Family
-		if family == "unknown" {
-			family = "other"
-		}
-		families[family] = append(families[family], model)
+	sb.WriteString("**Sonar Pro:**\n")
+	sb.WriteString(fmt.Sprintf("• `sonar-pro` - Perplexity Sonar Pro (more capable)"))
+	if defaultModel == perplexityapi.ModelSonarPro {
+		sb.WriteString(" *(default)*")
 	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  Context: %dk tokens\n\n", perplexityapi.ModelContextSizes[perplexityapi.ModelSonarPro]/1000))
 
-	// Display in order: opus, sonnet, haiku, other
-	for _, family := range []string{"opus", "sonnet", "haiku", "other"} {
-		familyModels := families[family]
-		if len(familyModels) == 0 {
-			continue
-		}
-
-		// Capitalize first letter (strings.Title is deprecated in Go 1.18+)
-		capitalizedFamily := strings.ToUpper(family[:1]) + family[1:]
-		sb.WriteString(fmt.Sprintf("**%s:**\n", capitalizedFamily))
-		for _, model := range familyModels {
-			isDefault := ""
-			if model.ID == defaultModel {
-				isDefault = " *(default)*"
-			}
-
-			sb.WriteString(fmt.Sprintf("• **%s**%s\n", model.DisplayName, isDefault))
-			sb.WriteString(fmt.Sprintf("  `%s`\n", model.ID))
-		}
-		sb.WriteString("\n")
+	sb.WriteString("**Sonar Reasoning:**\n")
+	sb.WriteString(fmt.Sprintf("• `sonar-reasoning` - Perplexity Sonar Reasoning (chain-of-thought)"))
+	if defaultModel == perplexityapi.ModelSonarReasoning {
+		sb.WriteString(" *(default)*")
 	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  Context: %dk tokens\n\n", perplexityapi.ModelContextSizes[perplexityapi.ModelSonarReasoning]/1000))
+
+	sb.WriteString("**Sonar Reasoning Pro:**\n")
+	sb.WriteString(fmt.Sprintf("• `sonar-reasoning-pro` - Perplexity Sonar Reasoning Pro (most capable)"))
+	if defaultModel == perplexityapi.ModelSonarReasoningPro {
+		sb.WriteString(" *(default)*")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("  Context: %dk tokens\n\n", perplexityapi.ModelContextSizes[perplexityapi.ModelSonarReasoningPro]/1000))
 
 	sb.WriteString("Use `model <model-id>` to switch models.\n")
-	sb.WriteString("Shortcuts: `opus`, `sonnet`, `haiku`")
+	sb.WriteString("Shortcuts: `sonar`, `sonar-pro`, `sonar-reasoning`, `sonar-reasoning-pro`")
 
 	ce.Reply(sb.String())
 }
 
 // cmdClear clears the conversation history.
-func (c *ClaudeConnector) cmdClear(ce *commands.Event) {
+func (c *PerplexityConnector) cmdClear(ce *commands.Event) {
 	if ce.Portal == nil {
-		ce.Reply("This command must be run in a Claude conversation room.")
+		ce.Reply("This command must be run in a Perplexity conversation room.")
 		return
 	}
 
@@ -436,7 +339,7 @@ func (c *ClaudeConnector) cmdClear(ce *commands.Event) {
 		return
 	}
 
-	client, ok := login.Client.(*ClaudeClient)
+	client, ok := login.Client.(*PerplexityClient)
 	if !ok || client == nil {
 		ce.Reply("Failed to get client.")
 		return
@@ -445,33 +348,16 @@ func (c *ClaudeConnector) cmdClear(ce *commands.Event) {
 	// Get stats before clearing
 	msgCount, tokens, _ := client.GetConversationStats(ce.Portal.PortalKey.ID)
 
-	// Clear the conversation (local history for API mode)
+	// Clear the conversation via sidecar
 	client.ClearConversation(ce.Portal.PortalKey.ID)
-
-	// Clear sidecar session ID from portal metadata (for sidecar mode)
-	// This ensures the next message starts a fresh Agent SDK session
-	meta, _ := ce.Portal.Metadata.(*PortalMetadata)
-	if meta != nil && meta.SidecarSessionID != "" {
-		oldSessionID := meta.SidecarSessionID
-		meta.SidecarSessionID = ""
-		ce.Portal.Metadata = meta
-		if err := ce.Portal.Save(ce.Ctx); err != nil {
-			c.Log.Warn().Err(err).Msg("Failed to clear sidecar session ID from portal metadata")
-		} else {
-			c.Log.Debug().
-				Str("old_session_id", oldSessionID).
-				Str("portal_id", string(ce.Portal.PortalKey.ID)).
-				Msg("Cleared sidecar session ID from portal metadata")
-		}
-	}
 
 	ce.Reply("Conversation cleared. Removed %d messages (~%d tokens).", msgCount, tokens)
 }
 
 // cmdStats shows conversation statistics.
-func (c *ClaudeConnector) cmdStats(ce *commands.Event) {
+func (c *PerplexityConnector) cmdStats(ce *commands.Event) {
 	if ce.Portal == nil {
-		ce.Reply("This command must be run in a Claude conversation room.")
+		ce.Reply("This command must be run in a Perplexity conversation room.")
 		return
 	}
 
@@ -481,14 +367,13 @@ func (c *ClaudeConnector) cmdStats(ce *commands.Event) {
 		return
 	}
 
-	client, ok := login.Client.(*ClaudeClient)
+	client, ok := login.Client.(*PerplexityClient)
 	if !ok || client == nil {
 		ce.Reply("Failed to get client.")
 		return
 	}
 
 	meta, _ := ce.Portal.Metadata.(*PortalMetadata)
-	isSidecarMode := client.MessageClient.GetClientType() == "sidecar"
 
 	var sb strings.Builder
 	sb.WriteString("**Conversation Statistics:**\n\n")
@@ -499,84 +384,31 @@ func (c *ClaudeConnector) cmdStats(ce *commands.Event) {
 		model = meta.Model
 	}
 
-	displayName := claudeapi.GetModelDisplayName(model)
-	if displayName != model {
-		sb.WriteString(fmt.Sprintf("**Model:** %s (`%s`)\n", displayName, model))
-	} else {
-		sb.WriteString(fmt.Sprintf("**Model:** `%s`\n", model))
-	}
+	sb.WriteString(fmt.Sprintf("**Model:** `%s`\n", model))
 
-	// Get stats - different sources for sidecar vs API mode
+	// Get stats from sidecar
 	var msgCount int
 	var inputTokens, outputTokens int64
-	var cacheCreationTokens, cacheReadTokens int64
-	var compactionCount int
-	var lastCompactionTime *float64
 	var lastUsed time.Time
 
-	if isSidecarMode {
-		// Get stats from sidecar
-		if sidecarClient, ok := client.MessageClient.(*sidecar.MessageClient); ok {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if stats, err := sidecarClient.GetSessionStats(ctx, string(ce.Portal.PortalKey.ID)); err == nil && stats != nil {
-				msgCount = stats.MessageCount
-				inputTokens = stats.InputTokens
-				outputTokens = stats.OutputTokens
-				cacheCreationTokens = stats.CacheCreationTokens
-				cacheReadTokens = stats.CacheReadTokens
-				compactionCount = stats.CompactionCount
-				lastCompactionTime = stats.LastCompactionTime
-				if stats.LastUsed > 0 {
-					lastUsed = time.Unix(int64(stats.LastUsed), 0)
-				}
+	if sidecarClient, ok := client.MessageClient.(*sidecar.MessageClient); ok {
+		ctx, cancel := context.WithTimeout(ce.Ctx, 5*time.Second)
+		defer cancel()
+		if stats, err := sidecarClient.GetSessionStats(ctx, string(ce.Portal.PortalKey.ID)); err == nil && stats != nil {
+			msgCount = stats.MessageCount
+			inputTokens = stats.InputTokens
+			outputTokens = stats.OutputTokens
+			if stats.LastUsed > 0 {
+				lastUsed = time.Unix(int64(stats.LastUsed), 0)
 			}
 		}
-	} else {
-		// Get local conversation stats for API mode
-		var estimatedTokens int
-		msgCount, estimatedTokens, lastUsed = client.GetConversationStats(ce.Portal.PortalKey.ID)
-		// API mode uses estimated tokens (no actual input/output breakdown from local tracking)
-		outputTokens = int64(estimatedTokens)
 	}
 
 	// Conversation stats
 	sb.WriteString(fmt.Sprintf("**Messages in context:** %d\n", msgCount))
-	if isSidecarMode {
-		// Sidecar provides actual token counts from Agent SDK
-		totalTokens := inputTokens + outputTokens
-		sb.WriteString(fmt.Sprintf("**Tokens used:** %d (in: %d, out: %d)\n",
-			totalTokens, inputTokens, outputTokens))
-
-		// Cache stats (prompt caching)
-		if cacheCreationTokens > 0 || cacheReadTokens > 0 {
-			sb.WriteString(fmt.Sprintf("**Cache tokens:** created: %d, read: %d\n",
-				cacheCreationTokens, cacheReadTokens))
-		}
-
-		// Compaction info
-		if compactionCount > 0 {
-			sb.WriteString(fmt.Sprintf("**Context compactions:** %d", compactionCount))
-			if lastCompactionTime != nil && *lastCompactionTime > 0 {
-				lastCompaction := time.Unix(int64(*lastCompactionTime), 0)
-				sb.WriteString(fmt.Sprintf(" (last: %s ago)", time.Since(lastCompaction).Round(time.Second)))
-			}
-			sb.WriteString("\n")
-		}
-	} else {
-		// API mode stats
-		sb.WriteString(fmt.Sprintf("**Estimated tokens:** ~%d\n", outputTokens))
-
-		// Show API mode compaction and context usage from conversation manager
-		_, estTokens, maxTokens, apiCompactionCount, _ := client.GetConversationFullStats(ce.Portal.PortalKey.ID)
-		if apiCompactionCount > 0 {
-			sb.WriteString(fmt.Sprintf("**Context compactions:** %d\n", apiCompactionCount))
-		}
-		if maxTokens > 0 && estTokens > 0 {
-			usagePercent := (estTokens * 100) / maxTokens
-			sb.WriteString(fmt.Sprintf("**Context usage:** ~%d%% of %dk limit\n", usagePercent, maxTokens/1000))
-		}
-	}
+	totalTokens := inputTokens + outputTokens
+	sb.WriteString(fmt.Sprintf("**Tokens used:** %d (in: %d, out: %d)\n",
+		totalTokens, inputTokens, outputTokens))
 
 	if !lastUsed.IsZero() {
 		sb.WriteString(fmt.Sprintf("**Last active:** %s ago\n", time.Since(lastUsed).Round(time.Second)))
@@ -598,27 +430,13 @@ func (c *ClaudeConnector) cmdStats(ce *commands.Event) {
 		sb.WriteString(fmt.Sprintf("**Temperature:** %.2f (default)\n", c.Config.GetTemperature()))
 	}
 
-	// API metrics (local bridge metrics)
+	// API metrics
 	if metrics := client.GetMetrics(); metrics != nil {
 		totalReqs := metrics.TotalRequests.Load()
 		failedReqs := metrics.FailedRequests.Load()
-		localInputTokens := metrics.TotalInputTokens.Load()
-		localOutputTokens := metrics.TotalOutputTokens.Load()
-		localCacheCreation := metrics.TotalCacheCreationTokens.Load()
-		localCacheRead := metrics.TotalCacheReadTokens.Load()
 
 		sb.WriteString(fmt.Sprintf("\n**API Stats (this session):**\n"))
 		sb.WriteString(fmt.Sprintf("• Requests: %d (%d failed)\n", totalReqs, failedReqs))
-		if !isSidecarMode {
-			// Only show token breakdown for API mode (sidecar already shows above)
-			sb.WriteString(fmt.Sprintf("• Total tokens: %d (in: %d, out: %d)\n",
-				localInputTokens+localOutputTokens, localInputTokens, localOutputTokens))
-			// Show cache tokens if any were used
-			if localCacheCreation > 0 || localCacheRead > 0 {
-				sb.WriteString(fmt.Sprintf("• Cache tokens: created: %d, read: %d\n",
-					localCacheCreation, localCacheRead))
-			}
-		}
 		if avgDuration := metrics.GetAverageRequestDuration(); avgDuration > 0 {
 			sb.WriteString(fmt.Sprintf("• Avg response time: %s\n", avgDuration.Round(time.Millisecond)))
 		}
@@ -628,9 +446,9 @@ func (c *ClaudeConnector) cmdStats(ce *commands.Event) {
 }
 
 // cmdSystem views or sets the system prompt.
-func (c *ClaudeConnector) cmdSystem(ce *commands.Event) {
+func (c *PerplexityConnector) cmdSystem(ce *commands.Event) {
 	if ce.Portal == nil {
-		ce.Reply("This command must be run in a Claude conversation room.")
+		ce.Reply("This command must be run in a Perplexity conversation room.")
 		return
 	}
 
@@ -683,9 +501,9 @@ func (c *ClaudeConnector) cmdSystem(ce *commands.Event) {
 }
 
 // cmdMention toggles mention-only mode.
-func (c *ClaudeConnector) cmdMention(ce *commands.Event) {
+func (c *PerplexityConnector) cmdMention(ce *commands.Event) {
 	if ce.Portal == nil {
-		ce.Reply("This command must be run in a Claude conversation room.")
+		ce.Reply("This command must be run in a Perplexity conversation room.")
 		return
 	}
 
@@ -698,9 +516,9 @@ func (c *ClaudeConnector) cmdMention(ce *commands.Event) {
 	// If no argument, show current status
 	if len(ce.Args) == 0 {
 		if meta.MentionOnly {
-			ce.Reply("**Mention-only mode:** ON\n\nClaude only responds when @mentioned.\n\nUse `mention off` to respond to all messages.")
+			ce.Reply("**Mention-only mode:** ON\n\nPerplexity only responds when @mentioned.\n\nUse `mention off` to respond to all messages.")
 		} else {
-			ce.Reply("**Mention-only mode:** OFF\n\nClaude responds to all messages.\n\nUse `mention on` to only respond when @mentioned.")
+			ce.Reply("**Mention-only mode:** OFF\n\nPerplexity responds to all messages.\n\nUse `mention on` to only respond when @mentioned.")
 		}
 		return
 	}
@@ -729,15 +547,15 @@ func (c *ClaudeConnector) cmdMention(ce *commands.Event) {
 	}
 
 	if newValue {
-		ce.Reply("Mention-only mode **enabled**. Claude will only respond when @mentioned.")
+		ce.Reply("Mention-only mode **enabled**. Perplexity will only respond when @mentioned.")
 	} else {
-		ce.Reply("Mention-only mode **disabled**. Claude will respond to all messages.")
+		ce.Reply("Mention-only mode **disabled**. Perplexity will respond to all messages.")
 	}
 }
 
-// cmdJoin adds Claude to the current room by creating a bridge portal.
-// If Claude is already in the room, this re-configures the relay.
-func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
+// cmdJoin adds Perplexity to the current room by creating a bridge portal.
+// If Perplexity is already in the room, this re-configures the relay.
+func (c *PerplexityConnector) cmdJoin(ce *commands.Event) {
 	c.Log.Debug().
 		Bool("portal_exists", ce.Portal != nil).
 		Strs("args", ce.Args).
@@ -775,7 +593,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 			modelArg := strings.Join(ce.Args, "-")
 			resolved, err := c.resolveModelArg(ctx, ce, modelArg)
 			if err != nil {
-				ce.Reply("Failed to resolve model: %v\n\nUse `opus`, `sonnet`, `haiku`, or a full model ID.", err)
+				ce.Reply("Failed to resolve model: %v\n\nUse `sonar`, `sonar-pro`, `sonar-reasoning`, or `sonar-reasoning-pro`.", err)
 				return
 			}
 			model = resolved
@@ -790,7 +608,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		if portalMeta == nil {
 			portalMeta = &PortalMetadata{}
 		}
-		portalMeta.ConversationName = fmt.Sprintf("Claude (%s)", model)
+		portalMeta.ConversationName = fmt.Sprintf("Perplexity (%s)", model)
 		portalMeta.Model = model
 		ce.Portal.Metadata = portalMeta
 
@@ -801,7 +619,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 
 		// Swap ghosts if model changed (uses shared helper)
 		if err := c.swapGhosts(ctx, ce.RoomID, oldModel, model); err != nil {
-			ce.Reply("Failed to update Claude ghost: %v", err)
+			ce.Reply("Failed to update Perplexity ghost: %v", err)
 			return
 		}
 
@@ -813,11 +631,10 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 			}
 		}
 
-		displayName := claudeapi.GetModelDisplayName(model)
 		if oldModel != model {
-			ce.Reply("✓ **%s** has joined the room! (replaced %s)\n\nUse `model` to change models, `mention on` for mention-only mode, or `clear` to reset conversation.", displayName, claudeapi.GetModelDisplayName(oldModel))
+			ce.Reply("✓ **Perplexity %s** has joined the room! (replaced %s)\n\nUse `model` to change models, `mention on` for mention-only mode, or `clear` to reset conversation.", model, oldModel)
 		} else {
-			ce.Reply("✓ **%s** is in the room! Relay updated.\n\nUse `model` to change models, `mention on` for mention-only mode, or `clear` to reset conversation.", displayName)
+			ce.Reply("✓ **Perplexity %s** is in the room! Relay updated.\n\nUse `model` to change models, `mention on` for mention-only mode, or `clear` to reset conversation.", model)
 		}
 		return
 	}
@@ -829,7 +646,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		return
 	}
 
-	client, ok := login.Client.(*ClaudeClient)
+	client, ok := login.Client.(*PerplexityClient)
 	if !ok || client == nil {
 		ce.Reply("Failed to get client.")
 		return
@@ -849,18 +666,20 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 			Msg("Join command: processing requested model")
 
 		switch requestedModel {
-		case "opus", "claude-opus":
-			model = "opus"
-		case "sonnet", "claude-sonnet":
-			model = "sonnet"
-		case "haiku", "claude-haiku":
-			model = "haiku"
+		case "sonar", "perplexity":
+			model = perplexityapi.ModelSonar
+		case "sonar-pro", "pro":
+			model = perplexityapi.ModelSonarPro
+		case "sonar-reasoning", "reasoning":
+			model = perplexityapi.ModelSonarReasoning
+		case "sonar-reasoning-pro", "reasoning-pro":
+			model = perplexityapi.ModelSonarReasoningPro
 		default:
 			// Assume it's a full model ID
-			if strings.Contains(requestedModel, "claude") {
+			if perplexityapi.IsValidModel(requestedModel) {
 				model = requestedModel
 			} else {
-				ce.Reply("Unknown model: %s. Use `opus`, `sonnet`, `haiku`, or a full model ID.", requestedModel)
+				ce.Reply("Unknown model: %s. Use `sonar`, `sonar-pro`, `sonar-reasoning`, `sonar-reasoning-pro`, or a full model ID.", requestedModel)
 				return
 			}
 		}
@@ -880,11 +699,11 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		Str("room_id", string(roomID)).
 		Str("model", model).
 		Str("user", string(ce.User.MXID)).
-		Msg("Join command: adding Claude to room")
+		Msg("Join command: adding Perplexity to room")
 
 	// Create a unique conversation/portal ID based on the room
 	conversationID := fmt.Sprintf("room_%s", roomID)
-	portalKey := MakeClaudePortalKey(conversationID)
+	portalKey := MakePerplexityPortalKey(conversationID)
 
 	// Get or create the portal
 	ctx := ce.Ctx
@@ -901,7 +720,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 	}
 
 	// Get the ghost for this model (with proper metadata)
-	ghostID := c.MakeClaudeGhostID(model)
+	ghostID := c.MakePerplexityGhostID(model)
 	c.Log.Debug().
 		Str("model", model).
 		Str("ghost_id", string(ghostID)).
@@ -909,7 +728,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 
 	ghost, err := c.GetOrUpdateGhost(ctx, ghostID, model)
 	if err != nil {
-		ce.Reply("Failed to get Claude ghost: %v", err)
+		ce.Reply("Failed to get Perplexity ghost: %v", err)
 		return
 	}
 
@@ -918,7 +737,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		Msg("Join command: got ghost intent")
 
 	// Set up portal metadata - always update the model even if portal exists
-	chatName := fmt.Sprintf("Claude (%s)", model)
+	chatName := fmt.Sprintf("Perplexity (%s)", model)
 
 	// Get existing metadata or create new
 	portalMeta, _ := portal.Metadata.(*PortalMetadata)
@@ -975,7 +794,7 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 			c.Log.Error().Err(err).
 				Str("ghost_mxid", ghost.Intent.GetMXID().String()).
 				Msg("Join command: failed to invite ghost")
-			ce.Reply("Failed to invite Claude to this room: %v\n\nMake sure the bot has permission to invite users.", err)
+			ce.Reply("Failed to invite Perplexity to this room: %v\n\nMake sure the bot has permission to invite users.", err)
 			return
 		}
 
@@ -983,13 +802,13 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		err = ghost.Intent.EnsureJoined(ctx, roomID)
 		if err != nil {
 			c.Log.Error().Err(err).Msg("Join command: ghost failed to join after invite")
-			ce.Reply("Claude was invited but failed to join: %v", err)
+			ce.Reply("Perplexity was invited but failed to join: %v", err)
 			return
 		}
 	}
 	c.Log.Debug().Msg("Join command: ghost successfully joined room")
 
-	// Auto-set relay so other users in the room can also talk to Claude
+	// Auto-set relay so other users in the room can also talk to Perplexity
 	// This uses the joining user's login to relay messages from non-logged-in users
 	if c.br.Config.Relay.Enabled {
 		if err := portal.SetRelay(ctx, login); err != nil {
@@ -1002,11 +821,10 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		}
 	}
 
-	displayName := claudeapi.GetModelDisplayName(model)
 	if c.br.Config.Relay.Enabled {
-		ce.Reply("✓ **%s** has joined the room!\n\nAll users in this room can now chat with Claude (messages relayed through your account).\n\nUse `model` to change models, `system` to set a custom prompt, `mention on` for mention-only mode, or `clear` to reset conversation.", displayName)
+		ce.Reply("✓ **Perplexity %s** has joined the room!\n\nAll users in this room can now chat with Perplexity (messages relayed through your account).\n\nUse `model` to change models, `system` to set a custom prompt, `mention on` for mention-only mode, or `clear` to reset conversation.", model)
 	} else {
-		ce.Reply("✓ **%s** has joined the room!\n\n⚠️ **Note:** Relay mode is disabled. Only you can talk to Claude. Enable `relay.enabled: true` in bridge config for multi-user support.\n\nUse `model` to change models, `system` to set a custom prompt, or `clear` to reset the conversation.", displayName)
+		ce.Reply("✓ **Perplexity %s** has joined the room!\n\n⚠️ **Note:** Relay mode is disabled. Only you can talk to Perplexity. Enable `relay.enabled: true` in bridge config for multi-user support.\n\nUse `model` to change models, `system` to set a custom prompt, or `clear` to reset the conversation.", model)
 	}
 
 	c.Log.Info().
@@ -1014,13 +832,13 @@ func (c *ClaudeConnector) cmdJoin(ce *commands.Event) {
 		Str("model", model).
 		Str("ghost_id", string(ghostID)).
 		Bool("relay_enabled", c.br.Config.Relay.Enabled).
-		Msg("Successfully added Claude to room")
+		Msg("Successfully added Perplexity to room")
 }
 
 // cmdTemperature views or sets the temperature.
-func (c *ClaudeConnector) cmdTemperature(ce *commands.Event) {
+func (c *PerplexityConnector) cmdTemperature(ce *commands.Event) {
 	if ce.Portal == nil {
-		ce.Reply("This command must be run in a Claude conversation room.")
+		ce.Reply("This command must be run in a Perplexity conversation room.")
 		return
 	}
 
@@ -1033,9 +851,9 @@ func (c *ClaudeConnector) cmdTemperature(ce *commands.Event) {
 	// If no argument, show current temperature
 	if len(ce.Args) == 0 {
 		if meta.Temperature != nil {
-			ce.Reply("**Current temperature:** %.2f\n\nUse `temperature <0-1>` to change, or `temperature reset` to use default.", *meta.Temperature)
+			ce.Reply("**Current temperature:** %.2f\n\nUse `temperature <0-2>` to change, or `temperature reset` to use default.", *meta.Temperature)
 		} else {
-			ce.Reply("**Current temperature:** %.2f (default)\n\nUse `temperature <0-1>` to change.", c.Config.GetTemperature())
+			ce.Reply("**Current temperature:** %.2f (default)\n\nUse `temperature <0-2>` to change.", c.Config.GetTemperature())
 		}
 		return
 	}
@@ -1056,12 +874,12 @@ func (c *ClaudeConnector) cmdTemperature(ce *commands.Event) {
 	// Parse temperature value
 	var temp float64
 	if _, err := fmt.Sscanf(ce.Args[0], "%f", &temp); err != nil {
-		ce.Reply("Invalid temperature value. Use a number between 0 and 1.")
+		ce.Reply("Invalid temperature value. Use a number between 0 and 2.")
 		return
 	}
 
-	if temp < 0 || temp > 1 {
-		ce.Reply("Temperature must be between 0 and 1.")
+	if temp < 0 || temp > 2 {
+		ce.Reply("Temperature must be between 0 and 2.")
 		return
 	}
 
@@ -1078,9 +896,9 @@ func (c *ClaudeConnector) cmdTemperature(ce *commands.Event) {
 
 // cmdRemoveGhost removes a bridge ghost from the current room.
 // This is an admin-only command for cleaning up stale/buggy ghost users.
-func (c *ClaudeConnector) cmdRemoveGhost(ce *commands.Event) {
+func (c *PerplexityConnector) cmdRemoveGhost(ce *commands.Event) {
 	if len(ce.Args) == 0 {
-		ce.Reply("Usage: `remove-ghost <@user:server>`\n\nExample: `remove-ghost @claude_unknown:example.com`")
+		ce.Reply("Usage: `remove-ghost <@user:server>`\n\nExample: `remove-ghost @perplexity_unknown:example.com`")
 		return
 	}
 

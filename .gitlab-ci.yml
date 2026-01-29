@@ -3,7 +3,7 @@ stages:
 
 variables:
   REGISTRY: dev.wn:5000
-  IMAGE_NAME: mautrix-claude
+  IMAGE_NAME: mautrix-perplexity
 
 docker:
   stage: docker

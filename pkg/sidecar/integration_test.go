@@ -11,7 +11,7 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"go.mau.fi/mautrix-claude/pkg/claudeapi"
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
 
 // TestIntegrationMessageClientToSidecar tests the full flow from MessageClient to sidecar HTTP API.
@@ -78,12 +78,13 @@ func TestIntegrationMessageClientToSidecar(t *testing.T) {
 	// Test 2: CreateMessage
 	t.Run("CreateMessage", func(t *testing.T) {
 		ctx := WithPortalID(context.Background(), "test-portal-123")
-		req := &claudeapi.CreateMessageRequest{
-			Model: "claude-3-sonnet",
-			Messages: []claudeapi.Message{
+		ctx = WithUserCredentials(ctx, "", "pplx-test-key-123")
+		req := &perplexityapi.CreateMessageRequest{
+			Model: "sonar",
+			Messages: []perplexityapi.Message{
 				{
 					Role:    "user",
-					Content: []claudeapi.Content{{Type: "text", Text: "Hello Claude!"}},
+					Content: []perplexityapi.Content{{Type: "text", Text: "Hello Perplexity!"}},
 				},
 			},
 		}
@@ -104,12 +105,13 @@ func TestIntegrationMessageClientToSidecar(t *testing.T) {
 	// Test 3: CreateMessageStream
 	t.Run("CreateMessageStream", func(t *testing.T) {
 		ctx := WithPortalID(context.Background(), "test-portal-456")
-		req := &claudeapi.CreateMessageRequest{
-			Model: "claude-3-sonnet",
-			Messages: []claudeapi.Message{
+		ctx = WithUserCredentials(ctx, "", "pplx-test-key-123")
+		req := &perplexityapi.CreateMessageRequest{
+			Model: "sonar",
+			Messages: []perplexityapi.Message{
 				{
 					Role:    "user",
-					Content: []claudeapi.Content{{Type: "text", Text: "Streaming test"}},
+					Content: []perplexityapi.Content{{Type: "text", Text: "Streaming test"}},
 				},
 			},
 		}
@@ -171,7 +173,7 @@ func TestIntegrationRetryBehavior(t *testing.T) {
 	log := zerolog.Nop()
 	client := NewClient(server.URL, 30*time.Second, log)
 
-	resp, err := client.Chat(context.Background(), "test-portal", "", "", "test message", "", nil, nil)
+	resp, err := client.Chat(context.Background(), "test-portal", "", "pplx-test-key-123", "test message", nil, nil)
 	if err != nil {
 		t.Fatalf("Expected success after retries, got error: %v", err)
 	}
@@ -202,11 +204,11 @@ func TestIntegrationCircuitBreaker(t *testing.T) {
 
 	// Make requests until circuit opens
 	for i := 0; i < 10; i++ {
-		_, _ = client.Chat(context.Background(), "test", "", "", "message", "", nil, nil)
+		_, _ = client.Chat(context.Background(), "test", "", "pplx-test-key-123", "message", nil, nil)
 	}
 
 	// After many failures, circuit should be open
-	_, err := client.Chat(context.Background(), "test", "", "", "message", "", nil, nil)
+	_, err := client.Chat(context.Background(), "test", "", "pplx-test-key-123", "message", nil, nil)
 	if err == nil || err.Error() != "circuit breaker open: sidecar temporarily unavailable" {
 		// Circuit might not be open yet depending on timing, but we should have errors
 		t.Logf("Circuit breaker state: %v", err)
@@ -265,10 +267,11 @@ func TestIntegrationSessionManagement(t *testing.T) {
 
 	// Create session via chat
 	ctx := WithPortalID(context.Background(), "portal-abc")
-	req := &claudeapi.CreateMessageRequest{
-		Messages: []claudeapi.Message{{
+	ctx = WithUserCredentials(ctx, "", "pplx-test-key-123")
+	req := &perplexityapi.CreateMessageRequest{
+		Messages: []perplexityapi.Message{{
 			Role:    "user",
-			Content: []claudeapi.Content{{Type: "text", Text: "Hello"}},
+			Content: []perplexityapi.Content{{Type: "text", Text: "Hello"}},
 		}},
 	}
 	_, err := messageClient.CreateMessage(ctx, req)
@@ -316,7 +319,7 @@ func TestIntegrationContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := client.Chat(ctx, "test", "", "", "message", "", nil, nil)
+	_, err := client.Chat(ctx, "test", "", "pplx-test-key-123", "message", nil, nil)
 	if err == nil {
 		t.Error("Expected error due to context cancellation")
 	}
@@ -345,10 +348,10 @@ func TestIntegrationMetricsTracking(t *testing.T) {
 	// Make a few requests
 	for i := 0; i < 3; i++ {
 		ctx := WithPortalID(context.Background(), "test")
-		req := &claudeapi.CreateMessageRequest{
-			Messages: []claudeapi.Message{{
+		req := &perplexityapi.CreateMessageRequest{
+			Messages: []perplexityapi.Message{{
 				Role:    "user",
-				Content: []claudeapi.Content{{Type: "text", Text: "Hello"}},
+				Content: []perplexityapi.Content{{Type: "text", Text: "Hello"}},
 			}},
 		}
 		_, _ = client.CreateMessage(ctx, req)

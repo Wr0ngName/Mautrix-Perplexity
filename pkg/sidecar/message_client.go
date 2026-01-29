@@ -1,4 +1,4 @@
-// Package sidecar provides a client for the Claude Agent SDK sidecar.
+// Package sidecar provides a client for the Perplexity API sidecar.
 package sidecar
 
 import (
@@ -8,37 +8,33 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"go.mau.fi/mautrix-claude/pkg/claudeapi"
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
 
-// MessageClient implements claudeapi.MessageClient using the sidecar.
-// This allows using Pro/Max subscriptions via the Agent SDK instead of API credits.
+// MessageClient implements perplexityapi.MessageClient using the sidecar.
 type MessageClient struct {
 	client  *Client
-	metrics *claudeapi.Metrics
+	metrics *perplexityapi.Metrics
 	log     zerolog.Logger
 }
 
-// Ensure MessageClient implements claudeapi.MessageClient
-var _ claudeapi.MessageClient = (*MessageClient)(nil)
+// Ensure MessageClient implements perplexityapi.MessageClient
+var _ perplexityapi.MessageClient = (*MessageClient)(nil)
 
 // NewMessageClient creates a new sidecar-backed MessageClient.
 func NewMessageClient(baseURL string, timeout time.Duration, log zerolog.Logger) *MessageClient {
 	return &MessageClient{
 		client:  NewClient(baseURL, timeout, log),
-		metrics: claudeapi.NewMetrics(),
+		metrics: perplexityapi.NewMetrics(),
 		log:     log.With().Str("client_type", "sidecar").Logger(),
 	}
 }
 
 // CreateMessageStream sends a message and returns a channel of streaming events.
-// Note: The sidecar currently returns complete responses, so we simulate streaming
-// by sending the complete response as a single event.
-func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.CreateMessageRequest) (<-chan claudeapi.StreamEvent, error) {
-	events := make(chan claudeapi.StreamEvent, 10)
+func (m *MessageClient) CreateMessageStream(ctx context.Context, req *perplexityapi.CreateMessageRequest) (<-chan perplexityapi.StreamEvent, error) {
+	events := make(chan perplexityapi.StreamEvent, 10)
 
-	// Helper to send event with context check
-	sendEvent := func(event claudeapi.StreamEvent) bool {
+	sendEvent := func(event perplexityapi.StreamEvent) bool {
 		select {
 		case <-ctx.Done():
 			return false
@@ -50,7 +46,6 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.
 	go func() {
 		defer close(events)
 
-		// Check if context is already cancelled
 		if ctx.Err() != nil {
 			return
 		}
@@ -58,34 +53,34 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.
 		startTime := time.Now()
 		m.metrics.TotalRequests.Add(1)
 
-		// Extract portal ID from context or generate one
+		// Extract portal ID from context
 		portalID := "default"
 		if pid, ok := ctx.Value(portalIDKey).(string); ok {
 			portalID = pid
 		}
 
-		// Extract user credentials from context
-		var userID, credentialsJSON string
+		// Extract user info from context
+		var userID, apiKey string
 		if uid, ok := ctx.Value(userIDKey).(string); ok {
 			userID = uid
 		}
-		if creds, ok := ctx.Value(credentialsJSONKey).(string); ok {
-			credentialsJSON = creds
+		if key, ok := ctx.Value(apiKeyContextKey).(string); ok {
+			apiKey = key
 		}
 
-		// Extract session ID for resume (stored in bridge DB)
-		var sessionID string
-		if sid, ok := ctx.Value(sessionIDKey).(string); ok {
-			sessionID = sid
+		// Extract web search options from context
+		var webSearchOptions *WebSearchOptions
+		if wso, ok := ctx.Value(webSearchOptionsKey).(*WebSearchOptions); ok {
+			webSearchOptions = wso
 		}
 
 		// Extract message content (text and images) from request
 		messageText, messageContent := extractMessageContent(req.Messages)
 		if messageText == "" && len(messageContent) == 0 {
 			m.metrics.FailedRequests.Add(1)
-			sendEvent(claudeapi.StreamEvent{
+			sendEvent(perplexityapi.StreamEvent{
 				Type: "error",
-				Error: &claudeapi.StreamError{
+				Error: &perplexityapi.StreamError{
 					Type:    "invalid_request",
 					Message: "empty message",
 				},
@@ -106,15 +101,15 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.
 		}
 
 		// Send message_start event
-		if !sendEvent(claudeapi.StreamEvent{
+		if !sendEvent(perplexityapi.StreamEvent{
 			Type: "message_start",
-			Message: &claudeapi.CreateMessageResponse{
+			Message: &perplexityapi.CreateMessageResponse{
 				ID:    fmt.Sprintf("sidecar_%d", time.Now().UnixNano()),
 				Model: req.Model,
-				Usage: &claudeapi.Usage{},
+				Usage: &perplexityapi.Usage{},
 			},
 		}) {
-			return // Context cancelled
+			return
 		}
 
 		// Call sidecar
@@ -127,24 +122,22 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.
 			model = &req.Model
 		}
 
-		// Use ChatWithContent to support images
-		resp, err := m.client.ChatWithContent(ctx, portalID, userID, credentialsJSON, messageText, messageContent, sessionID, systemPrompt, model)
+		resp, err := m.client.ChatWithContent(ctx, portalID, userID, apiKey, messageText, messageContent, systemPrompt, model, webSearchOptions)
 		if err != nil {
 			m.metrics.FailedRequests.Add(1)
-			// Check if it was a context cancellation
 			if ctx.Err() != nil {
-				sendEvent(claudeapi.StreamEvent{
+				sendEvent(perplexityapi.StreamEvent{
 					Type: "error",
-					Error: &claudeapi.StreamError{
+					Error: &perplexityapi.StreamError{
 						Type:    "cancelled",
 						Message: "request cancelled: " + ctx.Err().Error(),
 					},
 				})
 				return
 			}
-			sendEvent(claudeapi.StreamEvent{
+			sendEvent(perplexityapi.StreamEvent{
 				Type: "error",
-				Error: &claudeapi.StreamError{
+				Error: &perplexityapi.StreamError{
 					Type:    "sidecar_error",
 					Message: err.Error(),
 				},
@@ -152,48 +145,45 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.
 			return
 		}
 
-		// Use actual model from response (sidecar tells us what was used)
+		// Use actual model from response
 		actualModel := resp.Model
 		if actualModel == "" {
-			actualModel = req.Model // Fallback to request model if response is empty
+			actualModel = req.Model
 		}
 
 		// Send content as a single block
-		if !sendEvent(claudeapi.StreamEvent{
+		if !sendEvent(perplexityapi.StreamEvent{
 			Type: "content_block_delta",
-			Delta: &claudeapi.ContentDelta{
+			Delta: &perplexityapi.ContentDelta{
 				Type: "text_delta",
 				Text: resp.Response,
 			},
 		}) {
-			return // Context cancelled
+			return
 		}
 
-		// Track tokens if available from sidecar
-		// Note: Sidecar returns combined total, we track as output tokens only
-		// since we don't have input/output breakdown from Agent SDK
+		// Track tokens if available
 		if resp.TokensUsed != nil && *resp.TokensUsed > 0 {
 			m.metrics.TotalOutputTokens.Add(int64(*resp.TokensUsed))
 		}
 
-		// Send message_delta with usage, actual model, and session_id for bridge to store
-		if !sendEvent(claudeapi.StreamEvent{
+		// Send message_delta with usage and actual model
+		if !sendEvent(perplexityapi.StreamEvent{
 			Type:      "message_delta",
-			Model:     actualModel,    // Include actual model for ghost ID resolution
-			SessionID: resp.SessionID, // Return session_id for bridge to store in DB
-			Usage: &claudeapi.Usage{
+			Model:     actualModel,
+			SessionID: resp.SessionID,
+			Usage: &perplexityapi.Usage{
 				OutputTokens: estimateTokens(resp.Response),
 			},
 		}) {
-			return // Context cancelled
+			return
 		}
 
 		// Send message_stop
-		sendEvent(claudeapi.StreamEvent{
+		sendEvent(perplexityapi.StreamEvent{
 			Type: "message_stop",
 		})
 
-		// Record successful request
 		outputTokens := estimateTokens(resp.Response)
 		m.metrics.RecordRequest(actualModel, time.Since(startTime), 0, outputTokens)
 	}()
@@ -202,7 +192,7 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *claudeapi.
 }
 
 // CreateMessage sends a message and returns the complete response.
-func (m *MessageClient) CreateMessage(ctx context.Context, req *claudeapi.CreateMessageRequest) (*claudeapi.CreateMessageResponse, error) {
+func (m *MessageClient) CreateMessage(ctx context.Context, req *perplexityapi.CreateMessageRequest) (*perplexityapi.CreateMessageResponse, error) {
 	startTime := time.Now()
 	m.metrics.TotalRequests.Add(1)
 
@@ -212,13 +202,19 @@ func (m *MessageClient) CreateMessage(ctx context.Context, req *claudeapi.Create
 		portalID = pid
 	}
 
-	// Extract user credentials from context
-	var userID, credentialsJSON string
+	// Extract user info from context
+	var userID, apiKey string
 	if uid, ok := ctx.Value(userIDKey).(string); ok {
 		userID = uid
 	}
-	if creds, ok := ctx.Value(credentialsJSONKey).(string); ok {
-		credentialsJSON = creds
+	if key, ok := ctx.Value(apiKeyContextKey).(string); ok {
+		apiKey = key
+	}
+
+	// Extract web search options from context
+	var webSearchOptions *WebSearchOptions
+	if wso, ok := ctx.Value(webSearchOptionsKey).(*WebSearchOptions); ok {
+		webSearchOptions = wso
 	}
 
 	// Extract message content (text and images)
@@ -226,12 +222,6 @@ func (m *MessageClient) CreateMessage(ctx context.Context, req *claudeapi.Create
 	if messageText == "" && len(messageContent) == 0 {
 		m.metrics.FailedRequests.Add(1)
 		return nil, fmt.Errorf("empty message")
-	}
-
-	// Extract session ID for resume (stored in bridge DB)
-	var sessionID string
-	if sid, ok := ctx.Value(sessionIDKey).(string); ok {
-		sessionID = sid
 	}
 
 	// Call sidecar
@@ -244,63 +234,64 @@ func (m *MessageClient) CreateMessage(ctx context.Context, req *claudeapi.Create
 		model = &req.Model
 	}
 
-	// Use ChatWithContent to support images
-	resp, err := m.client.ChatWithContent(ctx, portalID, userID, credentialsJSON, messageText, messageContent, sessionID, systemPrompt, model)
+	resp, err := m.client.ChatWithContent(ctx, portalID, userID, apiKey, messageText, messageContent, systemPrompt, model, webSearchOptions)
 	if err != nil {
 		m.metrics.FailedRequests.Add(1)
 		return nil, err
 	}
 
-	// Use actual model from response (sidecar tells us what was used)
+	// Use actual model from response
 	actualModel := resp.Model
 	if actualModel == "" {
-		actualModel = req.Model // Fallback to request model if response is empty
+		actualModel = req.Model
 	}
 
 	outputTokens := estimateTokens(resp.Response)
 	m.metrics.RecordRequest(actualModel, time.Since(startTime), 0, outputTokens)
 
-	return &claudeapi.CreateMessageResponse{
-		ID:      resp.SessionID,
-		Type:    "message",
-		Role:    "assistant",
-		Model:   actualModel,
-		Content: []claudeapi.Content{{Type: "text", Text: resp.Response}},
-		Usage: &claudeapi.Usage{
-			OutputTokens: outputTokens,
-		},
-		StopReason: "end_turn",
+	// Convert search results
+	var searchResults []perplexityapi.SearchResult
+	for _, sr := range resp.SearchResults {
+		searchResults = append(searchResults, perplexityapi.SearchResult{
+			Title: sr.Title,
+			URL:   sr.URL,
+			Date:  sr.Date,
+		})
+	}
+
+	return &perplexityapi.CreateMessageResponse{
+		ID:            resp.SessionID,
+		Type:          "message",
+		Role:          "assistant",
+		Model:         actualModel,
+		Content:       []perplexityapi.Content{{Type: "text", Text: resp.Response}},
+		Usage:         &perplexityapi.Usage{OutputTokens: outputTokens},
+		StopReason:    "end_turn",
+		SearchResults: searchResults,
 	}, nil
 }
 
-// Validate checks if the sidecar is healthy and authenticated.
-// Note: This checks GLOBAL authentication. For per-user auth, use GetHealth() instead.
+// Validate checks if the sidecar is healthy.
 func (m *MessageClient) Validate(ctx context.Context) error {
 	health, err := m.client.Health(ctx)
 	if err != nil {
 		return fmt.Errorf("sidecar unavailable: %w", err)
 	}
-	if !health.Authenticated {
-		msg := "Claude Code not authenticated - bridge admin must configure valid credentials"
-		if health.Message != nil && *health.Message != "" {
-			msg = *health.Message
-		}
-		return fmt.Errorf("sidecar not ready: %s", msg)
+	if health.Status != "healthy" {
+		return fmt.Errorf("sidecar not healthy: %s", health.Status)
 	}
-	m.log.Info().Int("sessions", health.Sessions).Bool("authenticated", health.Authenticated).Msg("Sidecar is healthy")
+	m.log.Info().Int("sessions", health.Sessions).Msg("Sidecar is healthy")
 	return nil
 }
 
-// GetHealth returns the sidecar health status without requiring global authentication.
-// Use this when you want to check if sidecar is running but will provide per-user credentials.
+// GetHealth returns the sidecar health status.
 func (m *MessageClient) GetHealth(ctx context.Context) (*HealthResponse, error) {
 	return m.client.Health(ctx)
 }
 
-// TestAuth tests user credentials by making a minimal Claude API call via the sidecar.
-// Returns nil error if credentials are valid.
-func (m *MessageClient) TestAuth(ctx context.Context, userID, credentialsJSON string) error {
-	resp, err := m.client.TestAuth(ctx, userID, credentialsJSON)
+// TestAuth tests user API key by making a minimal Perplexity API call via the sidecar.
+func (m *MessageClient) TestAuth(ctx context.Context, userID, apiKey string) error {
+	resp, err := m.client.TestAuth(ctx, userID, apiKey)
 	if err != nil {
 		return fmt.Errorf("failed to test credentials: %w", err)
 	}
@@ -311,18 +302,8 @@ func (m *MessageClient) TestAuth(ctx context.Context, userID, credentialsJSON st
 }
 
 // GetMetrics returns the metrics collector.
-func (m *MessageClient) GetMetrics() *claudeapi.Metrics {
+func (m *MessageClient) GetMetrics() *perplexityapi.Metrics {
 	return m.metrics
-}
-
-// OAuthStart initiates the OAuth login flow and returns an authorization URL.
-func (m *MessageClient) OAuthStart(ctx context.Context, userID string) (*OAuthStartResponse, error) {
-	return m.client.OAuthStart(ctx, userID)
-}
-
-// OAuthComplete completes the OAuth flow by exchanging the code for credentials.
-func (m *MessageClient) OAuthComplete(ctx context.Context, userID, state, code string) (*OAuthCompleteResponse, error) {
-	return m.client.OAuthComplete(ctx, userID, state, code)
 }
 
 // GetClientType returns the client type identifier.
@@ -340,14 +321,14 @@ func (m *MessageClient) GetSessionStats(ctx context.Context, portalID string) (*
 	return m.client.GetSession(ctx, portalID)
 }
 
-// Context key for portal ID, user credentials, and session ID
+// Context keys for portal ID, user credentials, and web search options
 type contextKey string
 
 const (
-	portalIDKey        contextKey = "portal_id"
-	userIDKey          contextKey = "user_id"
-	credentialsJSONKey contextKey = "credentials_json"
-	sessionIDKey       contextKey = "session_id"
+	portalIDKey         contextKey = "portal_id"
+	userIDKey           contextKey = "user_id"
+	apiKeyContextKey    contextKey = "api_key"
+	webSearchOptionsKey contextKey = "web_search_options"
 )
 
 // WithPortalID returns a context with the portal ID set.
@@ -355,22 +336,20 @@ func WithPortalID(ctx context.Context, portalID string) context.Context {
 	return context.WithValue(ctx, portalIDKey, portalID)
 }
 
-// WithUserCredentials returns a context with user ID and credentials JSON set.
-func WithUserCredentials(ctx context.Context, userID, credentialsJSON string) context.Context {
+// WithUserCredentials returns a context with user ID and API key set.
+func WithUserCredentials(ctx context.Context, userID, apiKey string) context.Context {
 	ctx = context.WithValue(ctx, userIDKey, userID)
-	ctx = context.WithValue(ctx, credentialsJSONKey, credentialsJSON)
+	ctx = context.WithValue(ctx, apiKeyContextKey, apiKey)
 	return ctx
 }
 
-// WithSessionID returns a context with the Agent SDK session ID set (for resume).
-func WithSessionID(ctx context.Context, sessionID string) context.Context {
-	return context.WithValue(ctx, sessionIDKey, sessionID)
+// WithWebSearchOptions returns a context with web search options set.
+func WithWebSearchOptions(ctx context.Context, options *WebSearchOptions) context.Context {
+	return context.WithValue(ctx, webSearchOptionsKey, options)
 }
 
 // extractMessageContent extracts text and structured content from the last user message.
-// Returns the text content (for backward compatibility) and structured content blocks (for images).
-// If there are images, content will be non-nil.
-func extractMessageContent(messages []claudeapi.Message) (text string, content []ContentBlock) {
+func extractMessageContent(messages []perplexityapi.Message) (text string, content []ContentBlock) {
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
 			var textParts []string
@@ -409,8 +388,7 @@ func extractMessageContent(messages []claudeapi.Message) (text string, content [
 				}
 			}
 
-			// Only return content if there are images (for backward compatibility)
-			// Text-only messages will use the simple Message field
+			// Only return content if there are images
 			if !hasImages {
 				content = nil
 			}
@@ -421,15 +399,7 @@ func extractMessageContent(messages []claudeapi.Message) (text string, content [
 	return "", nil
 }
 
-// extractMessageText extracts the text content from the last user message.
-// Deprecated: Use extractMessageContent for multimodal support.
-func extractMessageText(messages []claudeapi.Message) string {
-	text, _ := extractMessageContent(messages)
-	return text
-}
-
 // estimateTokens provides a rough estimate of token count.
-// Assumes ~4 characters per token (rough average for English text).
 func estimateTokens(text string) int {
 	return len(text) / 4
 }

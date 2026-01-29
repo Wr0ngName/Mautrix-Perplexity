@@ -21,7 +21,7 @@ func (q *GhostQueryHandler) QueryAlias(alias id.RoomAlias) bool {
 }
 
 // QueryUser handles user existence queries from the homeserver.
-// Returns true if the user ID belongs to a valid Claude ghost user.
+// Returns true if the user ID belongs to a valid Perplexity ghost user.
 func (q *GhostQueryHandler) QueryUser(userID id.UserID) bool {
 	q.Log.Debug().Str("user_id", string(userID)).Msg("QueryUser called")
 
@@ -38,9 +38,9 @@ func (q *GhostQueryHandler) QueryUser(userID id.UserID) bool {
 		return false
 	}
 
-	// Valid ghost IDs are model family names: sonnet, opus, haiku, or "error"
+	// Valid ghost IDs are Perplexity model family names or "error"
 	switch string(ghostID) {
-	case "sonnet", "opus", "haiku", "error":
+	case "sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro", "error":
 		q.Log.Info().Str("user_id", string(userID)).Str("ghost_id", string(ghostID)).Msg("QueryUser: valid ghost, returning true")
 		return true
 	}

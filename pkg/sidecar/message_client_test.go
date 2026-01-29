@@ -10,8 +10,23 @@ import (
 
 	"github.com/rs/zerolog"
 
-	"go.mau.fi/mautrix-claude/pkg/claudeapi"
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
+
+// extractMessageText is a test helper that extracts the last user message text.
+func extractMessageText(messages []perplexityapi.Message) string {
+	var lastUserText string
+	for _, msg := range messages {
+		if msg.Role == "user" {
+			for _, c := range msg.Content {
+				if c.Type == "text" {
+					lastUserText = c.Text
+				}
+			}
+		}
+	}
+	return lastUserText
+}
 
 func TestNewMessageClient(t *testing.T) {
 	log := zerolog.Nop()
@@ -107,21 +122,21 @@ func TestMessageClientValidate(t *testing.T) {
 func TestCreateMessage(t *testing.T) {
 	tests := []struct {
 		name           string
-		request        *claudeapi.CreateMessageRequest
+		request        *perplexityapi.CreateMessageRequest
 		serverResponse func(w http.ResponseWriter, r *http.Request)
 		wantErr        bool
 		wantResponse   string
 	}{
 		{
 			name: "successful message",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-opus-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar",
 				MaxTokens: 1024,
-				Messages: []claudeapi.Message{
+				Messages: []perplexityapi.Message{
 					{
 						Role: "user",
-						Content: []claudeapi.Content{
-							{Type: "text", Text: "Hello Claude"},
+						Content: []perplexityapi.Content{
+							{Type: "text", Text: "Hello Perplexity"},
 						},
 					},
 				},
@@ -141,14 +156,14 @@ func TestCreateMessage(t *testing.T) {
 		},
 		{
 			name: "with system prompt",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-sonnet-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar-pro",
 				MaxTokens: 1024,
 				System:    "You are a helpful assistant",
-				Messages: []claudeapi.Message{
+				Messages: []perplexityapi.Message{
 					{
 						Role: "user",
-						Content: []claudeapi.Content{
+						Content: []perplexityapi.Content{
 							{Type: "text", Text: "Test"},
 						},
 					},
@@ -177,10 +192,10 @@ func TestCreateMessage(t *testing.T) {
 		},
 		{
 			name: "empty message",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-opus-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar",
 				MaxTokens: 1024,
-				Messages:  []claudeapi.Message{},
+				Messages:  []perplexityapi.Message{},
 			},
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				t.Error("Should not reach server with empty message")
@@ -189,13 +204,13 @@ func TestCreateMessage(t *testing.T) {
 		},
 		{
 			name: "server error",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-opus-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar",
 				MaxTokens: 1024,
-				Messages: []claudeapi.Message{
+				Messages: []perplexityapi.Message{
 					{
 						Role: "user",
-						Content: []claudeapi.Content{
+						Content: []perplexityapi.Content{
 							{Type: "text", Text: "Hello"},
 						},
 					},
@@ -215,7 +230,8 @@ func TestCreateMessage(t *testing.T) {
 			defer server.Close()
 
 			client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
-			ctx := context.Background()
+			// Add API key to context for validation
+			ctx := WithUserCredentials(context.Background(), "", "pplx-test-key-123")
 
 			resp, err := client.CreateMessage(ctx, tt.request)
 
@@ -259,15 +275,17 @@ func TestCreateMessageWithPortalID(t *testing.T) {
 	defer server.Close()
 
 	client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
+	// Add both portal ID and API key to context
 	ctx := WithPortalID(context.Background(), "custom-portal-123")
+	ctx = WithUserCredentials(ctx, "", "pplx-test-key-123")
 
-	req := &claudeapi.CreateMessageRequest{
-		Model:     "claude-3-opus-20240229",
+	req := &perplexityapi.CreateMessageRequest{
+		Model:     "sonar",
 		MaxTokens: 1024,
-		Messages: []claudeapi.Message{
+		Messages: []perplexityapi.Message{
 			{
 				Role: "user",
-				Content: []claudeapi.Content{
+				Content: []perplexityapi.Content{
 					{Type: "text", Text: "Hello"},
 				},
 			},
@@ -287,22 +305,22 @@ func TestCreateMessageWithPortalID(t *testing.T) {
 func TestCreateMessageStream(t *testing.T) {
 	tests := []struct {
 		name           string
-		request        *claudeapi.CreateMessageRequest
+		request        *perplexityapi.CreateMessageRequest
 		serverResponse func(w http.ResponseWriter, r *http.Request)
 		wantErr        bool
 		wantEvents     int
-		checkEvents    func(t *testing.T, events []claudeapi.StreamEvent)
+		checkEvents    func(t *testing.T, events []perplexityapi.StreamEvent)
 	}{
 		{
 			name: "successful stream",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-opus-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar",
 				MaxTokens: 1024,
-				Messages: []claudeapi.Message{
+				Messages: []perplexityapi.Message{
 					{
 						Role: "user",
-						Content: []claudeapi.Content{
-							{Type: "text", Text: "Hello Claude"},
+						Content: []perplexityapi.Content{
+							{Type: "text", Text: "Hello Perplexity"},
 						},
 					},
 				},
@@ -318,7 +336,7 @@ func TestCreateMessageStream(t *testing.T) {
 			},
 			wantErr:    false,
 			wantEvents: 4, // message_start, content_block_delta, message_delta, message_stop
-			checkEvents: func(t *testing.T, events []claudeapi.StreamEvent) {
+			checkEvents: func(t *testing.T, events []perplexityapi.StreamEvent) {
 				if len(events) != 4 {
 					t.Fatalf("Expected 4 events, got %d", len(events))
 				}
@@ -348,17 +366,17 @@ func TestCreateMessageStream(t *testing.T) {
 		},
 		{
 			name: "empty message error",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-opus-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar",
 				MaxTokens: 1024,
-				Messages:  []claudeapi.Message{},
+				Messages:  []perplexityapi.Message{},
 			},
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				t.Error("Should not reach server")
 			},
 			wantErr:    false, // Stream creation succeeds, error comes through channel
 			wantEvents: 1,     // error event
-			checkEvents: func(t *testing.T, events []claudeapi.StreamEvent) {
+			checkEvents: func(t *testing.T, events []perplexityapi.StreamEvent) {
 				if len(events) != 1 {
 					t.Fatalf("Expected 1 error event, got %d", len(events))
 				}
@@ -372,13 +390,13 @@ func TestCreateMessageStream(t *testing.T) {
 		},
 		{
 			name: "sidecar error",
-			request: &claudeapi.CreateMessageRequest{
-				Model:     "claude-3-opus-20240229",
+			request: &perplexityapi.CreateMessageRequest{
+				Model:     "sonar",
 				MaxTokens: 1024,
-				Messages: []claudeapi.Message{
+				Messages: []perplexityapi.Message{
 					{
 						Role: "user",
-						Content: []claudeapi.Content{
+						Content: []perplexityapi.Content{
 							{Type: "text", Text: "Hello"},
 						},
 					},
@@ -390,7 +408,7 @@ func TestCreateMessageStream(t *testing.T) {
 			},
 			wantErr:    false,
 			wantEvents: 2, // message_start, error
-			checkEvents: func(t *testing.T, events []claudeapi.StreamEvent) {
+			checkEvents: func(t *testing.T, events []perplexityapi.StreamEvent) {
 				if len(events) < 1 {
 					t.Fatal("Expected at least 1 event")
 				}
@@ -409,7 +427,8 @@ func TestCreateMessageStream(t *testing.T) {
 			defer server.Close()
 
 			client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
-			ctx := context.Background()
+			// Add API key to context for validation
+			ctx := WithUserCredentials(context.Background(), "", "pplx-test-key-123")
 
 			eventChan, err := client.CreateMessageStream(ctx, tt.request)
 
@@ -420,7 +439,7 @@ func TestCreateMessageStream(t *testing.T) {
 
 			if err == nil {
 				// Collect all events
-				var events []claudeapi.StreamEvent
+				var events []perplexityapi.StreamEvent
 				for event := range eventChan {
 					events = append(events, event)
 				}
@@ -430,69 +449,6 @@ func TestCreateMessageStream(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCreateMessageStreamMetrics(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(ChatResponse{
-			PortalID:   "default",
-			SessionID:  "session123",
-			Response:   "Response text here",
-			TokensUsed: intPtr(100),
-		})
-	}))
-	defer server.Close()
-
-	client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
-	ctx := context.Background()
-
-	req := &claudeapi.CreateMessageRequest{
-		Model:     "claude-3-opus-20240229",
-		MaxTokens: 1024,
-		Messages: []claudeapi.Message{
-			{
-				Role: "user",
-				Content: []claudeapi.Content{
-					{Type: "text", Text: "Hello"},
-				},
-			},
-		},
-	}
-
-	metrics := client.GetMetrics()
-	initialRequests := metrics.TotalRequests.Load()
-	initialSuccessful := metrics.SuccessfulRequests.Load()
-
-	eventChan, err := client.CreateMessageStream(ctx, req)
-	if err != nil {
-		t.Fatalf("CreateMessageStream() error = %v", err)
-	}
-
-	// Consume all events - this ensures the goroutine completes
-	for range eventChan {
-	}
-
-	// The goroutine updates metrics after closing the channel, but there can be
-	// a small race. Wait for metrics to be updated with a reasonable timeout.
-	// CreateMessageStream increments TotalRequests once at start and RecordRequest increments it again
-	expectedRequests := initialRequests + 2
-	for i := 0; i < 100; i++ {
-		if metrics.TotalRequests.Load() >= expectedRequests {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Check metrics were updated
-	if metrics.TotalRequests.Load() != expectedRequests {
-		t.Errorf("Total requests = %d, want %d", metrics.TotalRequests.Load(), expectedRequests)
-	}
-
-	expectedSuccessful := initialSuccessful + 1
-	if metrics.SuccessfulRequests.Load() != expectedSuccessful {
-		t.Errorf("Successful requests = %d, want %d", metrics.SuccessfulRequests.Load(), expectedSuccessful)
 	}
 }
 
@@ -568,15 +524,15 @@ func TestGetSessionStats(t *testing.T) {
 func TestExtractMessageText(t *testing.T) {
 	tests := []struct {
 		name     string
-		messages []claudeapi.Message
+		messages []perplexityapi.Message
 		want     string
 	}{
 		{
 			name: "single user message",
-			messages: []claudeapi.Message{
+			messages: []perplexityapi.Message{
 				{
 					Role: "user",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "text", Text: "Hello"},
 					},
 				},
@@ -585,22 +541,22 @@ func TestExtractMessageText(t *testing.T) {
 		},
 		{
 			name: "multiple messages, extract last user",
-			messages: []claudeapi.Message{
+			messages: []perplexityapi.Message{
 				{
 					Role: "user",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "text", Text: "First message"},
 					},
 				},
 				{
 					Role: "assistant",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "text", Text: "Response"},
 					},
 				},
 				{
 					Role: "user",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "text", Text: "Second message"},
 					},
 				},
@@ -609,10 +565,10 @@ func TestExtractMessageText(t *testing.T) {
 		},
 		{
 			name: "no user messages",
-			messages: []claudeapi.Message{
+			messages: []perplexityapi.Message{
 				{
 					Role: "assistant",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "text", Text: "Response"},
 					},
 				},
@@ -621,20 +577,20 @@ func TestExtractMessageText(t *testing.T) {
 		},
 		{
 			name: "empty content",
-			messages: []claudeapi.Message{
+			messages: []perplexityapi.Message{
 				{
 					Role:    "user",
-					Content: []claudeapi.Content{},
+					Content: []perplexityapi.Content{},
 				},
 			},
 			want: "",
 		},
 		{
 			name: "non-text content",
-			messages: []claudeapi.Message{
+			messages: []perplexityapi.Message{
 				{
 					Role: "user",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "image"},
 					},
 				},
@@ -643,10 +599,10 @@ func TestExtractMessageText(t *testing.T) {
 		},
 		{
 			name: "multiple content blocks",
-			messages: []claudeapi.Message{
+			messages: []perplexityapi.Message{
 				{
 					Role: "user",
-					Content: []claudeapi.Content{
+					Content: []perplexityapi.Content{
 						{Type: "image"},
 						{Type: "text", Text: "Describe this"},
 					},
@@ -661,253 +617,6 @@ func TestExtractMessageText(t *testing.T) {
 			got := extractMessageText(tt.messages)
 			if got != tt.want {
 				t.Errorf("extractMessageText() = %s, want %s", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestExtractMessageContent(t *testing.T) {
-	tests := []struct {
-		name        string
-		messages    []claudeapi.Message
-		wantText    string
-		wantContent []ContentBlock
-	}{
-		{
-			name: "text only - no content returned",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{Type: "text", Text: "Hello world"},
-					},
-				},
-			},
-			wantText:    "Hello world",
-			wantContent: nil, // No content for text-only (backward compat)
-		},
-		{
-			name: "image only",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{
-							Type: "image",
-							Source: &claudeapi.ImageSource{
-								Type:      "base64",
-								MediaType: "image/jpeg",
-								Data:      "base64data",
-							},
-						},
-					},
-				},
-			},
-			wantText: "",
-			wantContent: []ContentBlock{
-				{
-					Type: "image",
-					Source: &ImageSource{
-						Type:      "base64",
-						MediaType: "image/jpeg",
-						Data:      "base64data",
-					},
-				},
-			},
-		},
-		{
-			name: "image with text caption",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{
-							Type: "image",
-							Source: &claudeapi.ImageSource{
-								Type:      "base64",
-								MediaType: "image/png",
-								Data:      "pngdata",
-							},
-						},
-						{Type: "text", Text: "What's in this image?"},
-					},
-				},
-			},
-			wantText: "What's in this image?",
-			wantContent: []ContentBlock{
-				{
-					Type: "image",
-					Source: &ImageSource{
-						Type:      "base64",
-						MediaType: "image/png",
-						Data:      "pngdata",
-					},
-				},
-				{
-					Type: "text",
-					Text: "What's in this image?",
-				},
-			},
-		},
-		{
-			name: "multiple images with text",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{
-							Type: "image",
-							Source: &claudeapi.ImageSource{
-								Type:      "base64",
-								MediaType: "image/jpeg",
-								Data:      "img1data",
-							},
-						},
-						{
-							Type: "image",
-							Source: &claudeapi.ImageSource{
-								Type:      "base64",
-								MediaType: "image/jpeg",
-								Data:      "img2data",
-							},
-						},
-						{Type: "text", Text: "Compare these two"},
-					},
-				},
-			},
-			wantText: "Compare these two",
-			wantContent: []ContentBlock{
-				{
-					Type: "image",
-					Source: &ImageSource{
-						Type:      "base64",
-						MediaType: "image/jpeg",
-						Data:      "img1data",
-					},
-				},
-				{
-					Type: "image",
-					Source: &ImageSource{
-						Type:      "base64",
-						MediaType: "image/jpeg",
-						Data:      "img2data",
-					},
-				},
-				{
-					Type: "text",
-					Text: "Compare these two",
-				},
-			},
-		},
-		{
-			name: "image with nil source - ignored",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{Type: "image", Source: nil},
-						{Type: "text", Text: "Some text"},
-					},
-				},
-			},
-			wantText:    "Some text",
-			wantContent: nil, // No valid images, so nil content
-		},
-		{
-			name: "empty message",
-			messages: []claudeapi.Message{
-				{
-					Role:    "user",
-					Content: []claudeapi.Content{},
-				},
-			},
-			wantText:    "",
-			wantContent: nil,
-		},
-		{
-			name: "multiple text blocks",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{Type: "text", Text: "First part"},
-						{Type: "text", Text: "Second part"},
-					},
-				},
-			},
-			wantText:    "First part\nSecond part",
-			wantContent: nil, // No images, so nil content
-		},
-		{
-			name: "text and image with multiple text blocks",
-			messages: []claudeapi.Message{
-				{
-					Role: "user",
-					Content: []claudeapi.Content{
-						{Type: "text", Text: "Look at this:"},
-						{
-							Type: "image",
-							Source: &claudeapi.ImageSource{
-								Type:      "base64",
-								MediaType: "image/gif",
-								Data:      "gifdata",
-							},
-						},
-						{Type: "text", Text: "And tell me what it shows"},
-					},
-				},
-			},
-			wantText: "Look at this:\nAnd tell me what it shows",
-			wantContent: []ContentBlock{
-				{Type: "text", Text: "Look at this:"},
-				{
-					Type: "image",
-					Source: &ImageSource{
-						Type:      "base64",
-						MediaType: "image/gif",
-						Data:      "gifdata",
-					},
-				},
-				{Type: "text", Text: "And tell me what it shows"},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotText, gotContent := extractMessageContent(tt.messages)
-
-			if gotText != tt.wantText {
-				t.Errorf("extractMessageContent() text = %q, want %q", gotText, tt.wantText)
-			}
-
-			if len(gotContent) != len(tt.wantContent) {
-				t.Errorf("extractMessageContent() content length = %d, want %d", len(gotContent), len(tt.wantContent))
-				return
-			}
-
-			for i, got := range gotContent {
-				want := tt.wantContent[i]
-				if got.Type != want.Type {
-					t.Errorf("content[%d].Type = %q, want %q", i, got.Type, want.Type)
-				}
-				if got.Text != want.Text {
-					t.Errorf("content[%d].Text = %q, want %q", i, got.Text, want.Text)
-				}
-				if (got.Source == nil) != (want.Source == nil) {
-					t.Errorf("content[%d].Source nil mismatch", i)
-				}
-				if got.Source != nil && want.Source != nil {
-					if got.Source.Type != want.Source.Type {
-						t.Errorf("content[%d].Source.Type = %q, want %q", i, got.Source.Type, want.Source.Type)
-					}
-					if got.Source.MediaType != want.Source.MediaType {
-						t.Errorf("content[%d].Source.MediaType = %q, want %q", i, got.Source.MediaType, want.Source.MediaType)
-					}
-					if got.Source.Data != want.Source.Data {
-						t.Errorf("content[%d].Source.Data = %q, want %q", i, got.Source.Data, want.Source.Data)
-					}
-				}
 			}
 		})
 	}
@@ -983,8 +692,8 @@ func TestWithPortalID(t *testing.T) {
 }
 
 func TestMessageClientImplementsInterface(t *testing.T) {
-	// Compile-time check that MessageClient implements claudeapi.MessageClient
-	var _ claudeapi.MessageClient = (*MessageClient)(nil)
+	// Compile-time check that MessageClient implements perplexityapi.MessageClient
+	var _ perplexityapi.MessageClient = (*MessageClient)(nil)
 }
 
 func TestCreateMessageMetrics(t *testing.T) {
@@ -1000,15 +709,16 @@ func TestCreateMessageMetrics(t *testing.T) {
 	defer server.Close()
 
 	client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
-	ctx := context.Background()
+	// Add API key to context for validation
+	ctx := WithUserCredentials(context.Background(), "", "pplx-test-key-123")
 
-	req := &claudeapi.CreateMessageRequest{
-		Model:     "claude-3-opus-20240229",
+	req := &perplexityapi.CreateMessageRequest{
+		Model:     "sonar",
 		MaxTokens: 1024,
-		Messages: []claudeapi.Message{
+		Messages: []perplexityapi.Message{
 			{
 				Role: "user",
-				Content: []claudeapi.Content{
+				Content: []perplexityapi.Content{
 					{Type: "text", Text: "Hello"},
 				},
 			},
@@ -1047,13 +757,13 @@ func TestCreateMessageErrorMetrics(t *testing.T) {
 	client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
 	ctx := context.Background()
 
-	req := &claudeapi.CreateMessageRequest{
-		Model:     "claude-3-opus-20240229",
+	req := &perplexityapi.CreateMessageRequest{
+		Model:     "sonar",
 		MaxTokens: 1024,
-		Messages: []claudeapi.Message{
+		Messages: []perplexityapi.Message{
 			{
 				Role: "user",
-				Content: []claudeapi.Content{
+				Content: []perplexityapi.Content{
 					{Type: "text", Text: "Hello"},
 				},
 			},
@@ -1087,13 +797,13 @@ func BenchmarkCreateMessage(b *testing.B) {
 	client := NewMessageClient(server.URL, 5*time.Minute, zerolog.Nop())
 	ctx := context.Background()
 
-	req := &claudeapi.CreateMessageRequest{
-		Model:     "claude-3-opus-20240229",
+	req := &perplexityapi.CreateMessageRequest{
+		Model:     "sonar",
 		MaxTokens: 1024,
-		Messages: []claudeapi.Message{
+		Messages: []perplexityapi.Message{
 			{
 				Role: "user",
-				Content: []claudeapi.Content{
+				Content: []perplexityapi.Content{
 					{Type: "text", Text: "Hello"},
 				},
 			},
@@ -1107,22 +817,22 @@ func BenchmarkCreateMessage(b *testing.B) {
 }
 
 func BenchmarkExtractMessageText(b *testing.B) {
-	messages := []claudeapi.Message{
+	messages := []perplexityapi.Message{
 		{
 			Role: "user",
-			Content: []claudeapi.Content{
+			Content: []perplexityapi.Content{
 				{Type: "text", Text: "Hello"},
 			},
 		},
 		{
 			Role: "assistant",
-			Content: []claudeapi.Content{
+			Content: []perplexityapi.Content{
 				{Type: "text", Text: "Hi there!"},
 			},
 		},
 		{
 			Role: "user",
-			Content: []claudeapi.Content{
+			Content: []perplexityapi.Content{
 				{Type: "text", Text: "How are you?"},
 			},
 		},

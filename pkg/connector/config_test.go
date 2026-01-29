@@ -2,34 +2,11 @@ package connector
 
 import (
 	"testing"
+
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
 
-func TestSidecarConfigEnabled(t *testing.T) {
-	tests := []struct {
-		name   string
-		config SidecarConfig
-		want   bool
-	}{
-		{
-			name:   "enabled",
-			config: SidecarConfig{Enabled: true},
-			want:   true,
-		},
-		{
-			name:   "disabled",
-			config: SidecarConfig{Enabled: false},
-			want:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.config.Enabled != tt.want {
-				t.Errorf("Enabled = %v, want %v", tt.config.Enabled, tt.want)
-			}
-		})
-	}
-}
+// Note: Sidecar is now mandatory for the Perplexity bridge, so there's no Enabled field to test.
 
 func TestSidecarConstants(t *testing.T) {
 	if DefaultSidecarURL != "http://localhost:8090" {
@@ -43,28 +20,28 @@ func TestSidecarConstants(t *testing.T) {
 
 func TestSidecarConfigGetters(t *testing.T) {
 	t.Run("URL defaults when empty", func(t *testing.T) {
-		config := SidecarConfig{Enabled: true}
+		config := SidecarConfig{}
 		if config.GetURL() != DefaultSidecarURL {
 			t.Errorf("GetURL() = %s, want %s", config.GetURL(), DefaultSidecarURL)
 		}
 	})
 
 	t.Run("URL returns custom value when set", func(t *testing.T) {
-		config := SidecarConfig{Enabled: true, URL: "http://custom:9090"}
+		config := SidecarConfig{URL: "http://custom:9090"}
 		if config.GetURL() != "http://custom:9090" {
 			t.Errorf("GetURL() = %s, want http://custom:9090", config.GetURL())
 		}
 	})
 
 	t.Run("Timeout defaults when zero", func(t *testing.T) {
-		config := SidecarConfig{Enabled: true}
+		config := SidecarConfig{}
 		if config.GetTimeout() != DefaultSidecarTimeout {
 			t.Errorf("GetTimeout() = %d, want %d", config.GetTimeout(), DefaultSidecarTimeout)
 		}
 	})
 
 	t.Run("Timeout returns custom value when set", func(t *testing.T) {
-		config := SidecarConfig{Enabled: true, Timeout: 600}
+		config := SidecarConfig{Timeout: 600}
 		if config.GetTimeout() != 600 {
 			t.Errorf("GetTimeout() = %d, want 600", config.GetTimeout())
 		}
@@ -80,64 +57,64 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid config",
 			config: Config{
-				DefaultModel:       "claude-3-opus-20240229",
+				DefaultModel:       "sonar",
 				MaxTokens:          4096,
 				Temperature:        floatPtr(1.0),
 				SystemPrompt:       "You are helpful",
 				ConversationMaxAge: 24,
 				RateLimitPerMinute: 60,
-				Sidecar:            SidecarConfig{Enabled: false},
+				Sidecar:            SidecarConfig{},
 			},
 			wantErr: false,
 		},
 		{
-			name: "valid config with sidecar enabled",
+			name: "valid config with sonar-pro",
 			config: Config{
-				DefaultModel:       "claude-3-sonnet-20240229",
+				DefaultModel:       "sonar-pro",
 				MaxTokens:          1024,
 				Temperature:        nil,
 				ConversationMaxAge: 0,
 				RateLimitPerMinute: 0,
-				Sidecar:            SidecarConfig{Enabled: true},
+				Sidecar:            SidecarConfig{},
 			},
 			wantErr: false,
 		},
 		{
 			name: "temperature too low",
 			config: Config{
-				DefaultModel: "claude-3-opus-20240229",
+				DefaultModel: "sonar",
 				Temperature:  floatPtr(-0.1),
 			},
 			wantErr: true,
 		},
 		{
-			name: "temperature too high",
+			name: "temperature too high for Perplexity (max 2.0)",
 			config: Config{
-				DefaultModel: "claude-3-opus-20240229",
-				Temperature:  floatPtr(1.1),
+				DefaultModel: "sonar",
+				Temperature:  floatPtr(2.1),
 			},
 			wantErr: true,
 		},
 		{
 			name: "temperature zero is valid",
 			config: Config{
-				DefaultModel: "claude-3-opus-20240229",
+				DefaultModel: "sonar",
 				Temperature:  floatPtr(0.0),
 			},
 			wantErr: false,
 		},
 		{
-			name: "temperature exactly 1.0 is valid",
+			name: "temperature 2.0 is valid for Perplexity",
 			config: Config{
-				DefaultModel: "claude-3-opus-20240229",
-				Temperature:  floatPtr(1.0),
+				DefaultModel: "sonar",
+				Temperature:  floatPtr(2.0),
 			},
 			wantErr: false,
 		},
 		{
 			name: "negative max tokens",
 			config: Config{
-				DefaultModel: "claude-3-opus-20240229",
+				DefaultModel: "sonar",
 				MaxTokens:    -1,
 			},
 			wantErr: true,
@@ -145,15 +122,15 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "excessive max tokens",
 			config: Config{
-				DefaultModel: "claude-3-opus-20240229",
-				MaxTokens:    200000,
+				DefaultModel: "sonar",
+				MaxTokens:    200001,
 			},
 			wantErr: true,
 		},
 		{
 			name: "negative conversation age",
 			config: Config{
-				DefaultModel:       "claude-3-opus-20240229",
+				DefaultModel:       "sonar",
 				ConversationMaxAge: -1,
 			},
 			wantErr: true,
@@ -161,7 +138,7 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "negative rate limit",
 			config: Config{
-				DefaultModel:       "claude-3-opus-20240229",
+				DefaultModel:       "sonar",
 				RateLimitPerMinute: -1,
 			},
 			wantErr: true,
@@ -200,13 +177,13 @@ func TestGetDefaultModel(t *testing.T) {
 	}{
 		{
 			name:   "has default model",
-			config: Config{DefaultModel: "claude-3-opus-20240229"},
-			want:   "claude-3-opus-20240229",
+			config: Config{DefaultModel: "sonar-pro"},
+			want:   "sonar-pro",
 		},
 		{
-			name:   "empty default model",
+			name:   "empty default model uses sonar",
 			config: Config{DefaultModel: ""},
-			want:   "sonnet",
+			want:   perplexityapi.DefaultModel,
 		},
 	}
 
@@ -226,16 +203,14 @@ func TestIsModelFamily(t *testing.T) {
 		model string
 		want  bool
 	}{
-		{name: "sonnet", model: "sonnet", want: true},
-		{name: "opus", model: "opus", want: true},
-		{name: "haiku", model: "haiku", want: true},
-		{name: "claude-sonnet", model: "claude-sonnet", want: true},
-		{name: "claude-opus", model: "claude-opus", want: true},
-		{name: "claude-haiku", model: "claude-haiku", want: true},
-		{name: "uppercase sonnet", model: "SONNET", want: true},
-		{name: "full model id", model: "claude-3-opus-20240229", want: false},
-		{name: "unknown", model: "unknown", want: false},
+		{name: "sonar", model: "sonar", want: true},
+		{name: "sonar-pro", model: "sonar-pro", want: true},
+		{name: "sonar-reasoning", model: "sonar-reasoning", want: true},
+		{name: "sonar-reasoning-pro", model: "sonar-reasoning-pro", want: true},
+		{name: "uppercase sonar", model: "SONAR", want: true},
+		{name: "unknown model", model: "unknown", want: false},
 		{name: "empty", model: "", want: false},
+		{name: "non-perplexity model", model: "gpt-4", want: false},
 	}
 
 	for _, tt := range tests {
@@ -254,17 +229,13 @@ func TestGetModelFamilyName(t *testing.T) {
 		model string
 		want  string
 	}{
-		{name: "sonnet", model: "sonnet", want: "sonnet"},
-		{name: "opus", model: "opus", want: "opus"},
-		{name: "haiku", model: "haiku", want: "haiku"},
-		{name: "claude-sonnet", model: "claude-sonnet", want: "sonnet"},
-		{name: "claude-opus", model: "claude-opus", want: "opus"},
-		{name: "claude-haiku", model: "claude-haiku", want: "haiku"},
-		{name: "uppercase", model: "SONNET", want: "sonnet"},
-		{name: "mixed case", model: "Opus", want: "opus"},
-		{name: "full model id", model: "claude-3-opus-20240229", want: ""},
-		{name: "unknown", model: "unknown", want: ""},
-		{name: "empty", model: "", want: ""},
+		{name: "sonar", model: "sonar", want: "sonar"},
+		{name: "sonar-pro", model: "sonar-pro", want: "sonar-pro"},
+		{name: "sonar-reasoning", model: "sonar-reasoning", want: "sonar-reasoning"},
+		{name: "sonar-reasoning-pro", model: "sonar-reasoning-pro", want: "sonar-reasoning-pro"},
+		{name: "uppercase", model: "SONAR", want: "sonar"},
+		{name: "unknown defaults to sonar", model: "unknown", want: "sonar"},
+		{name: "empty defaults to sonar", model: "", want: "sonar"},
 	}
 
 	for _, tt := range tests {
@@ -444,13 +415,18 @@ func TestValidateModelID(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "valid model id",
-			modelID: "claude-3-opus-20240229",
+			name:    "valid model id sonar",
+			modelID: "sonar",
 			wantErr: false,
 		},
 		{
-			name:    "valid short model id",
-			modelID: "claude-sonnet",
+			name:    "valid model id sonar-pro",
+			modelID: "sonar-pro",
+			wantErr: false,
+		},
+		{
+			name:    "valid model id sonar-reasoning",
+			modelID: "sonar-reasoning",
 			wantErr: false,
 		},
 		{
@@ -459,7 +435,7 @@ func TestValidateModelID(t *testing.T) {
 			wantErr: false, // Empty is allowed, will use default
 		},
 		{
-			name:    "invalid model id (not claude)",
+			name:    "invalid model id (not perplexity)",
 			modelID: "gpt-4",
 			wantErr: true,
 		},
@@ -467,11 +443,6 @@ func TestValidateModelID(t *testing.T) {
 			name:    "too long model id",
 			modelID: string(make([]byte, MaxModelIDLength+1)),
 			wantErr: true,
-		},
-		{
-			name:    "max length model id with claude",
-			modelID: "claude-" + string(make([]byte, MaxModelIDLength-7)),
-			wantErr: false,
 		},
 	}
 
@@ -551,19 +522,19 @@ func TestExampleConfig(t *testing.T) {
 
 func TestSidecarConfigInConfig(t *testing.T) {
 	config := Config{
-		DefaultModel: "claude-3-opus-20240229",
+		DefaultModel: "sonar",
 		Sidecar: SidecarConfig{
-			Enabled: true,
+			URL:     "http://localhost:9090",
+			Timeout: 120,
 		},
 	}
 
-	if !config.Sidecar.Enabled {
-		t.Error("Sidecar should be enabled")
+	// Sidecar is mandatory, so we just test that URL and Timeout are set correctly
+	if config.Sidecar.URL != "http://localhost:9090" {
+		t.Errorf("Sidecar URL should be http://localhost:9090, got %s", config.Sidecar.URL)
 	}
-
-	config.Sidecar.Enabled = false
-	if config.Sidecar.Enabled {
-		t.Error("Sidecar should be disabled")
+	if config.Sidecar.Timeout != 120 {
+		t.Errorf("Sidecar Timeout should be 120, got %d", config.Sidecar.Timeout)
 	}
 }
 

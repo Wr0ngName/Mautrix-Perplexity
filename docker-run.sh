@@ -9,14 +9,14 @@ fi
 function fixperms {
 	chown -R $UID:$GID /data
 
-	# /opt/mautrix-claude is read-only, so disable file logging if it's pointing there.
-	if [[ "$(yq e '.logging.writers[1].filename' /data/config.yaml)" == "./logs/mautrix-claude.log" ]]; then
+	# /opt/mautrix-perplexity is read-only, so disable file logging if it's pointing there.
+	if [[ "$(yq e '.logging.writers[1].filename' /data/config.yaml)" == "./logs/mautrix-perplexity.log" ]]; then
 		yq -I4 e -i 'del(.logging.writers[1])' /data/config.yaml
 	fi
 }
 
 function start_sidecar {
-	echo "Starting Claude Agent SDK sidecar..."
+	echo "Starting Perplexity SDK sidecar..."
 	gosu $UID:$GID python /app/sidecar/main.py &
 	SIDECAR_PID=$!
 
@@ -45,7 +45,7 @@ function cleanup {
 trap cleanup SIGTERM SIGINT
 
 if [[ ! -f /data/config.yaml ]]; then
-	/usr/bin/mautrix-claude -c /data/config.yaml -e
+	/usr/bin/mautrix-perplexity -c /data/config.yaml -e
 	echo "Didn't find a config file."
 	echo "Copied default config file to /data/config.yaml"
 	echo "Modify that config file to your liking."
@@ -54,7 +54,7 @@ if [[ ! -f /data/config.yaml ]]; then
 fi
 
 if [[ ! -f /data/registration.yaml ]]; then
-	/usr/bin/mautrix-claude -g -c /data/config.yaml -r /data/registration.yaml || exit $?
+	/usr/bin/mautrix-perplexity -g -c /data/config.yaml -r /data/registration.yaml || exit $?
 	echo "Didn't find a registration file."
 	echo "Generated one for you."
 	echo "See https://docs.mau.fi/bridges/general/registering-appservices.html on how to use it."
@@ -64,25 +64,12 @@ fi
 cd /data
 fixperms
 
-# Check if sidecar is enabled in config
-SIDECAR_ENABLED=$(yq e '.network.sidecar.enabled // false' /data/config.yaml)
-if [[ "$SIDECAR_ENABLED" == "true" ]]; then
-	echo "Sidecar mode enabled (Pro/Max subscription via Agent SDK)"
-	if ! start_sidecar; then
-		echo "WARNING: Sidecar failed to start - Pro/Max login will not be available"
-		echo "To fix: copy ~/.claude/* to ./data/.claude/ and restart"
-	else
-		# Check if sidecar is authenticated
-		AUTH_STATUS=$(curl -sf http://localhost:8090/health | yq -r '.authenticated // "unknown"')
-		if [[ "$AUTH_STATUS" != "true" ]]; then
-			echo "WARNING: Sidecar running but Claude Code not authenticated"
-			echo "Pro/Max login will fail until credentials are configured"
-			echo "To fix: copy ~/.claude/* to ./data/.claude/ and restart"
-		fi
-	fi
-else
-	echo "API mode (direct Anthropic API)"
+# Sidecar is mandatory for Perplexity bridge
+echo "Starting Perplexity SDK sidecar (mandatory for Perplexity API access)..."
+if ! start_sidecar; then
+	echo "ERROR: Sidecar failed to start - Perplexity bridge requires the sidecar"
+	echo "The bridge will start but login will fail until sidecar is running"
 fi
 
 # Run the bridge
-exec gosu $UID:$GID /usr/bin/mautrix-claude -c /data/config.yaml
+exec gosu $UID:$GID /usr/bin/mautrix-perplexity -c /data/config.yaml

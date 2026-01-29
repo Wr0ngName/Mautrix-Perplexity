@@ -146,8 +146,8 @@ The sidecar has detected repeated failures:
 
 The Go bridge cannot reach the sidecar:
 1. Check container logs for Python errors
-2. Verify sidecar is enabled in config
-3. Check for port conflicts on 8090
+2. Check for port conflicts on 8090
+3. Verify the sidecar URL in config (default: http://localhost:8090)
 
 ## API Endpoints (Internal)
 

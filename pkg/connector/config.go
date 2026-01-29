@@ -3,42 +3,40 @@ package connector
 import (
 	"fmt"
 	"strings"
+
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
 
 // DefaultTemperature is the default temperature when not specified.
 const DefaultTemperature = 1.0
 
 // ErrorMessagePrefix is the emoji/prefix used for error messages sent to Matrix rooms.
-// This provides visual distinction for error notices.
 const ErrorMessagePrefix = "⚠️ "
 
 // Input validation limits to prevent abuse and excessive API costs.
 const (
 	// MaxMessageLength is the maximum allowed message length in characters.
-	// Claude models support ~100k tokens, but we limit to prevent abuse.
 	MaxMessageLength = 100000
 
 	// MaxModelIDLength is the maximum length for model identifiers.
 	MaxModelIDLength = 100
 
 	// MinRateLimitPerMinute is the minimum rate limit to prevent abuse.
-	// Setting to 0 in config means "use default", not "unlimited".
 	MinRateLimitPerMinute = 1
 
 	// DefaultRateLimitPerMinute is used when rate limit is not set or set to 0.
 	DefaultRateLimitPerMinute = 60
 )
 
-// Config contains the configuration for the Claude connector.
+// Config contains the configuration for the Perplexity connector.
 type Config struct {
-	// DefaultModel is the default Claude model to use
+	// DefaultModel is the default Perplexity model to use
 	DefaultModel string `yaml:"default_model"`
 
 	// MaxTokens is the maximum tokens for responses
 	MaxTokens int `yaml:"max_tokens"`
 
-	// Temperature controls randomness (0.0-1.0)
-	// Using a pointer allows distinguishing between "not set" and "set to 0"
+	// Temperature controls randomness (0.0-2.0 for Perplexity)
 	Temperature *float64 `yaml:"temperature,omitempty"`
 
 	// SystemPrompt is the default system prompt
@@ -50,16 +48,24 @@ type Config struct {
 	// RateLimitPerMinute is the rate limit (0 = unlimited)
 	RateLimitPerMinute int `yaml:"rate_limit_per_minute"`
 
-	// Sidecar configuration for Pro/Max subscription support
+	// Sidecar configuration for Perplexity SDK
 	Sidecar SidecarConfig `yaml:"sidecar"`
+
+	// WebSearchOptions contains default web search options
+	WebSearchOptions *WebSearchConfig `yaml:"web_search_options,omitempty"`
 }
 
-// SidecarConfig contains configuration for the Agent SDK sidecar.
-type SidecarConfig struct {
-	// Enabled enables the sidecar backend instead of direct API
-	// When enabled, uses Pro/Max subscription via Agent SDK instead of API credits
-	Enabled bool `yaml:"enabled"`
+// WebSearchConfig contains web search options for Perplexity.
+type WebSearchConfig struct {
+	// SearchDomainFilter limits search to specific domains
+	SearchDomainFilter []string `yaml:"search_domain_filter,omitempty"`
+	// SearchRecencyFilter limits search to recent results ("day", "week", "month", "year")
+	SearchRecencyFilter string `yaml:"search_recency_filter,omitempty"`
+}
 
+// SidecarConfig contains configuration for the Perplexity SDK sidecar.
+// The sidecar is mandatory for the Perplexity bridge as it uses the official Perplexity Python SDK.
+type SidecarConfig struct {
 	// URL is the sidecar service URL (default: http://localhost:8090)
 	URL string `yaml:"url"`
 
@@ -92,20 +98,17 @@ func (c *SidecarConfig) GetTimeout() int {
 }
 
 // ExampleConfig is the example configuration for the connector.
-// Note: Do NOT add section headers here - framework adds "network:" wrapper automatically.
-const ExampleConfig = `# Default Claude model to use
-# Use family names (sonnet, opus, haiku) to automatically use the latest version
-# Or specify a full model ID for a specific version
+const ExampleConfig = `# Default Perplexity model to use
+# Available models: sonar, sonar-pro, sonar-reasoning, sonar-reasoning-pro
 # Run the "models" command after login to see all available models
-default_model: sonnet
+default_model: sonar
 
-# Maximum tokens for responses (depends on model, typically 4096-64000)
+# Maximum tokens for responses (depends on model)
 max_tokens: 4096
 
-# Temperature controls randomness (0.0-1.0, default 1.0)
+# Temperature controls randomness (0.0-2.0, default 1.0)
 # Lower = more focused and deterministic
 # Higher = more creative and varied
-# Set to 0 for most deterministic responses
 temperature: 1.0
 
 # Default system prompt (can be overridden per room)
@@ -119,11 +122,16 @@ conversation_max_age_hours: 24
 # Helps prevent API rate limit errors
 rate_limit_per_minute: 60
 
-# Sidecar mode for Pro/Max subscription support
-# When enabled, uses the Claude Agent SDK sidecar instead of direct API
-# This allows using Pro/Max subscriptions instead of API credits
+# Perplexity-specific web search options (optional)
+# web_search_options:
+#     # Limit search to specific domains (e.g., ["wikipedia.org", "arxiv.org"])
+#     search_domain_filter: []
+#     # Limit search to recent results: "day", "week", "month", "year"
+#     search_recency_filter: ""
+
+# Sidecar configuration (mandatory for Perplexity bridge)
+# The sidecar uses the official Perplexity Python SDK
 sidecar:
-    enabled: false
     # URL of the sidecar service (default: http://localhost:8090)
     url: "http://localhost:8090"
     # Request timeout in seconds (default: 300)
@@ -131,22 +139,19 @@ sidecar:
 `
 
 // Validate validates the configuration.
-// Note: Model validation is done at runtime via API, not at config load time.
 func (c *Config) Validate() error {
-	// Allow family names (sonnet, opus, haiku) or full Claude model IDs
+	// Validate model - allow Perplexity model names
 	if c.DefaultModel != "" {
 		model := strings.ToLower(c.DefaultModel)
-		isFamily := model == "sonnet" || model == "opus" || model == "haiku"
-		isClaudeModel := strings.Contains(model, "claude")
-		if !isFamily && !isClaudeModel {
-			return fmt.Errorf("invalid model format: %s (must be a family name like 'sonnet' or a Claude model ID)", c.DefaultModel)
+		if !perplexityapi.IsValidModel(model) && !IsModelFamily(model) {
+			return fmt.Errorf("invalid model: %s (available: %s)", c.DefaultModel, strings.Join(perplexityapi.ModelFamilies, ", "))
 		}
 	}
 
-	// Validate temperature if set
+	// Validate temperature if set (Perplexity allows 0-2)
 	if c.Temperature != nil {
-		if *c.Temperature < 0 || *c.Temperature > 1 {
-			return fmt.Errorf("temperature must be between 0 and 1, got %f", *c.Temperature)
+		if *c.Temperature < 0 || *c.Temperature > 2 {
+			return fmt.Errorf("temperature must be between 0 and 2, got %f", *c.Temperature)
 		}
 	}
 
@@ -155,9 +160,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max_tokens must be non-negative, got %d", c.MaxTokens)
 	}
 
-	// Check against reasonable max (models vary, but 128k is a safe upper bound)
-	if c.MaxTokens > 128000 {
-		return fmt.Errorf("max_tokens (%d) exceeds reasonable maximum (128000)", c.MaxTokens)
+	// Check against reasonable max
+	if c.MaxTokens > 200000 {
+		return fmt.Errorf("max_tokens (%d) exceeds reasonable maximum (200000)", c.MaxTokens)
 	}
 
 	// Validate conversation max age
@@ -170,39 +175,39 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("rate_limit_per_minute must be non-negative, got %d", c.RateLimitPerMinute)
 	}
 
+	// Validate web search options
+	if c.WebSearchOptions != nil && c.WebSearchOptions.SearchRecencyFilter != "" {
+		valid := map[string]bool{"day": true, "week": true, "month": true, "year": true}
+		if !valid[c.WebSearchOptions.SearchRecencyFilter] {
+			return fmt.Errorf("invalid search_recency_filter: %s (must be day, week, month, or year)", c.WebSearchOptions.SearchRecencyFilter)
+		}
+	}
+
 	return nil
 }
 
 // GetDefaultModel returns the configured default model.
-// This may be a family name (sonnet, opus, haiku) that needs resolution.
 func (c *Config) GetDefaultModel() string {
 	if c.DefaultModel == "" {
-		return "sonnet" // Default to latest sonnet
+		return perplexityapi.DefaultModel
 	}
 	return c.DefaultModel
 }
 
-// IsModelFamily checks if a model string is a family name that needs resolution.
+// IsModelFamily checks if a model string is a family name.
 func IsModelFamily(model string) bool {
-	switch strings.ToLower(model) {
-	case "sonnet", "opus", "haiku", "claude-sonnet", "claude-opus", "claude-haiku":
-		return true
+	model = strings.ToLower(model)
+	for _, family := range perplexityapi.ModelFamilies {
+		if model == family {
+			return true
+		}
 	}
 	return false
 }
 
-// GetModelFamily extracts the family name from a model string.
+// GetModelFamilyName extracts the family name from a model string.
 func GetModelFamilyName(model string) string {
-	model = strings.ToLower(model)
-	switch model {
-	case "sonnet", "claude-sonnet":
-		return "sonnet"
-	case "opus", "claude-opus":
-		return "opus"
-	case "haiku", "claude-haiku":
-		return "haiku"
-	}
-	return ""
+	return perplexityapi.GetModelFamily(model)
 }
 
 // GetMaxTokens returns the max tokens, using a default if not set.
@@ -214,7 +219,6 @@ func (c *Config) GetMaxTokens() int {
 }
 
 // GetTemperature returns the temperature, using a default if not set.
-// This correctly handles the case where temperature is explicitly set to 0.
 func (c *Config) GetTemperature() float64 {
 	if c.Temperature == nil {
 		return DefaultTemperature
@@ -231,7 +235,6 @@ func (c *Config) GetSystemPrompt() string {
 }
 
 // GetRateLimitPerMinute returns the rate limit, enforcing a minimum.
-// A configured value of 0 means "use default", not "unlimited".
 func (c *Config) GetRateLimitPerMinute() int {
 	if c.RateLimitPerMinute <= 0 {
 		return DefaultRateLimitPerMinute
@@ -255,14 +258,13 @@ func ValidateModelID(modelID string) error {
 	if len(modelID) > MaxModelIDLength {
 		return fmt.Errorf("model ID too long: %d characters (max %d)", len(modelID), MaxModelIDLength)
 	}
-	if modelID != "" && !strings.Contains(strings.ToLower(modelID), "claude") {
-		return fmt.Errorf("invalid model ID format: must be a Claude model")
+	if modelID != "" && !perplexityapi.IsValidModel(modelID) {
+		return fmt.Errorf("invalid model: %s (available: %s)", modelID, strings.Join(perplexityapi.ModelFamilies, ", "))
 	}
 	return nil
 }
 
 // TemperaturePtr is a helper to create a pointer to a float64.
-// Useful for setting temperature in config.
 func TemperaturePtr(t float64) *float64 {
 	return &t
 }

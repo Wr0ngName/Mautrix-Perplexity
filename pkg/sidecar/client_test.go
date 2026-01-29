@@ -159,7 +159,7 @@ func TestChat(t *testing.T) {
 		{
 			name:     "successful chat",
 			portalID: "portal123",
-			message:  "Hello Claude",
+			message:  "Hello Perplexity",
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/v1/chat" {
 					t.Errorf("Expected path '/v1/chat', got '%s'", r.URL.Path)
@@ -179,8 +179,8 @@ func TestChat(t *testing.T) {
 				if req.PortalID != "portal123" {
 					t.Errorf("Expected portal_id 'portal123', got '%s'", req.PortalID)
 				}
-				if req.Message != "Hello Claude" {
-					t.Errorf("Expected message 'Hello Claude', got '%s'", req.Message)
+				if req.Message != "Hello Perplexity" {
+					t.Errorf("Expected message 'Hello Perplexity', got '%s'", req.Message)
 				}
 				if req.Stream != false {
 					t.Error("Expected stream to be false")
@@ -204,7 +204,7 @@ func TestChat(t *testing.T) {
 			portalID:     "portal123",
 			message:      "Test message",
 			systemPrompt: strPtr("You are a helpful assistant"),
-			model:        strPtr("claude-3-opus-20240229"),
+			model:        strPtr("sonar-pro"),
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
 				var req ChatRequest
 				json.NewDecoder(r.Body).Decode(&req)
@@ -212,7 +212,7 @@ func TestChat(t *testing.T) {
 				if req.SystemPrompt == nil || *req.SystemPrompt != "You are a helpful assistant" {
 					t.Error("System prompt not properly sent")
 				}
-				if req.Model == nil || *req.Model != "claude-3-opus-20240229" {
+				if req.Model == nil || *req.Model != "sonar-pro" {
 					t.Error("Model not properly sent")
 				}
 
@@ -257,7 +257,7 @@ func TestChat(t *testing.T) {
 			client := NewClient(server.URL, 30*time.Second, zerolog.Nop())
 			ctx := context.Background()
 
-			resp, err := client.Chat(ctx, tt.portalID, "", "", tt.message, "", tt.systemPrompt, tt.model)
+			resp, err := client.Chat(ctx, tt.portalID, "", "pplx-test-key-123", tt.message, tt.systemPrompt, tt.model)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("Chat() error = %v, wantErr %v", err, tt.wantErr)
@@ -291,7 +291,7 @@ func TestChatContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	_, err := client.Chat(ctx, "portal123", "", "", "message", "", nil, nil)
+	_, err := client.Chat(ctx, "portal123", "", "pplx-test-key-123", "message", nil, nil)
 	if err == nil {
 		t.Error("Expected error due to context cancellation")
 	}
@@ -354,63 +354,8 @@ func TestDeleteSession(t *testing.T) {
 	}
 }
 
-func TestDeleteUser(t *testing.T) {
-	tests := []struct {
-		name           string
-		userID         string
-		serverResponse func(w http.ResponseWriter, r *http.Request)
-		wantErr        bool
-	}{
-		{
-			name:   "successful delete",
-			userID: "@user:example.com",
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/users/@user:example.com" {
-					t.Errorf("Expected path '/v1/users/@user:example.com', got '%s'", r.URL.Path)
-				}
-				if r.Method != "DELETE" {
-					t.Errorf("Expected DELETE method, got '%s'", r.Method)
-				}
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte(`{"status": "deleted", "user_id": "@user:example.com"}`))
-			},
-			wantErr: false,
-		},
-		{
-			name:   "user not found (should not error)",
-			userID: "nonexistent",
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusNotFound)
-			},
-			wantErr: false, // 404 is acceptable for delete
-		},
-		{
-			name:   "server error",
-			userID: "@user:example.com",
-			serverResponse: func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("internal error"))
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(tt.serverResponse))
-			defer server.Close()
-
-			client := NewClient(server.URL, 30*time.Second, zerolog.Nop())
-			ctx := context.Background()
-
-			err := client.DeleteUser(ctx, tt.userID)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("DeleteUser() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
+// Note: DeleteUser is not applicable to Perplexity sidecar as it uses API key auth,
+// not per-user credential storage.
 
 func TestGetSession(t *testing.T) {
 	tests := []struct {
@@ -570,7 +515,7 @@ func TestTruncate(t *testing.T) {
 
 func TestChatRequestMarshaling(t *testing.T) {
 	systemPrompt := "You are helpful"
-	model := "claude-3-opus-20240229"
+	model := "sonar-pro"
 
 	req := ChatRequest{
 		PortalID:     "portal123",
@@ -658,8 +603,8 @@ func TestChatEmptyMessage(t *testing.T) {
 	client := NewClient(server.URL, 30*time.Second, zerolog.Nop())
 	ctx := context.Background()
 
-	// Server should reject empty message
-	_, err := client.Chat(ctx, "portal123", "", "", "", "", nil, nil)
+	// Client should reject empty message (now validated client-side)
+	_, err := client.Chat(ctx, "portal123", "", "pplx-test-key-123", "", nil, nil)
 	if err == nil {
 		t.Error("Expected error for empty message")
 	}
@@ -705,6 +650,6 @@ func BenchmarkChat(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _ = client.Chat(ctx, "portal123", "", "", "Hello", "", nil, nil)
+		_, _ = client.Chat(ctx, "portal123", "", "pplx-test-key-123", "Hello", nil, nil)
 	}
 }

@@ -144,14 +144,14 @@ func (m *mockMatrixAPI) GetEvent(ctx context.Context, roomID id.RoomID, eventID 
 
 func TestSendMessageWithRetry(t *testing.T) {
 	log := zerolog.New(zerolog.NewTestWriter(t))
-	connector := &ClaudeConnector{Log: log}
+	connector := &PerplexityConnector{Log: log}
 
 	t.Run("sends message successfully without retry", func(t *testing.T) {
 		mock := &mockMatrixAPI{}
 		ghost := &bridgev2.Ghost{Intent: mock}
 		portal := createTestPortal("!room:example.com")
 
-		client := &ClaudeClient{Connector: connector}
+		client := &PerplexityClient{Connector: connector}
 		client.sendMessageWithRetry(context.Background(), portal, ghost, "Hello world", "msg_1", 0, MaxMessageSize)
 
 		if len(mock.sendCalls) != 1 {
@@ -172,7 +172,7 @@ func TestSendMessageWithRetry(t *testing.T) {
 		ghost := &bridgev2.Ghost{Intent: mock}
 		portal := createTestPortal("!room:example.com")
 
-		client := &ClaudeClient{Connector: connector}
+		client := &PerplexityClient{Connector: connector}
 		client.sendMessageWithRetry(context.Background(), portal, ghost, largeMessage, "msg_1", 0, 8000)
 
 		// Should have retried with smaller chunks
@@ -197,7 +197,7 @@ func TestSendMessageWithRetry(t *testing.T) {
 		ghost := &bridgev2.Ghost{Intent: mock}
 		portal := createTestPortal("!room:example.com")
 
-		client := &ClaudeClient{Connector: connector}
+		client := &PerplexityClient{Connector: connector}
 		// Use a message that fits in one chunk at any size
 		client.sendMessageWithRetry(context.Background(), portal, ghost, "Small message", "msg_1", 0, 16000)
 
@@ -215,7 +215,7 @@ func TestSendMessageWithRetry(t *testing.T) {
 		ghost := &bridgev2.Ghost{Intent: mock}
 		portal := createTestPortal("!room:example.com")
 
-		client := &ClaudeClient{Connector: connector}
+		client := &PerplexityClient{Connector: connector}
 		client.sendMessageWithRetry(context.Background(), portal, ghost, "Test message", "msg_1", 0, MinMessageSize*2)
 
 		// Should have attempted and eventually sent an error notice
@@ -239,7 +239,7 @@ func TestSendMessageWithRetry(t *testing.T) {
 		ghost := &bridgev2.Ghost{Intent: mock}
 		portal := createTestPortal("!room:example.com")
 
-		client := &ClaudeClient{Connector: connector}
+		client := &PerplexityClient{Connector: connector}
 		client.sendMessageWithRetry(context.Background(), portal, ghost, "Test message", "msg_1", 0, MaxMessageSize)
 
 		// Should have made 2 calls: 1 failed message + 1 error notice attempt
@@ -257,7 +257,7 @@ func TestSendMessageWithRetry(t *testing.T) {
 		ghost := &bridgev2.Ghost{Intent: mock}
 		portal := createTestPortal("!room:example.com")
 
-		client := &ClaudeClient{Connector: connector}
+		client := &PerplexityClient{Connector: connector}
 		client.sendMessageWithRetry(context.Background(), portal, ghost, largeMessage, "msg_1", 0, MaxMessageSize)
 
 		// Should have split into multiple messages

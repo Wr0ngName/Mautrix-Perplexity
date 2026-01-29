@@ -20,11 +20,11 @@ import (
 	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
 
-	"go.mau.fi/mautrix-claude/pkg/claudeapi"
-	"go.mau.fi/mautrix-claude/pkg/sidecar"
+	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
+	"go.mau.fi/mautrix-perplexity/pkg/sidecar"
 )
 
-// Supported image MIME types for Claude Vision API.
+// Supported image MIME types for Perplexity Vision API.
 var supportedImageTypes = map[string]bool{
 	"image/jpeg": true,
 	"image/png":  true,
@@ -32,7 +32,7 @@ var supportedImageTypes = map[string]bool{
 	"image/webp": true,
 }
 
-// isImageSupported checks if a MIME type is supported by Claude Vision.
+// isImageSupported checks if a MIME type is supported by Perplexity Vision.
 func isImageSupported(mimeType string) bool {
 	return supportedImageTypes[mimeType]
 }
@@ -49,7 +49,7 @@ func getMessageText(content *event.MessageEventContent) string {
 }
 
 // downloadAndEncodeImage downloads an image from Matrix and converts it to base64.
-func (c *ClaudeClient) downloadAndEncodeImage(ctx context.Context, content *event.MessageEventContent) (*claudeapi.Content, error) {
+func (c *PerplexityClient) downloadAndEncodeImage(ctx context.Context, content *event.MessageEventContent) (*perplexityapi.Content, error) {
 	// Get the content URI
 	uri := content.URL
 	if uri == "" && content.File != nil {
@@ -82,11 +82,11 @@ func (c *ClaudeClient) downloadAndEncodeImage(ctx context.Context, content *even
 	c.Connector.Log.Debug().
 		Str("mime_type", mimeType).
 		Int("size_bytes", len(imageData)).
-		Msg("Downloaded and encoded image for Claude Vision")
+		Msg("Downloaded and encoded image for Perplexity Vision")
 
-	return &claudeapi.Content{
+	return &perplexityapi.Content{
 		Type: "image",
-		Source: &claudeapi.ImageSource{
+		Source: &perplexityapi.ImageSource{
 			Type:      "base64",
 			MediaType: mimeType,
 			Data:      base64Data,
@@ -94,7 +94,7 @@ func (c *ClaudeClient) downloadAndEncodeImage(ctx context.Context, content *even
 	}, nil
 }
 
-// recentMention tracks when a user mentioned Claude in a portal.
+// recentMention tracks when a user mentioned Perplexity in a portal.
 type recentMention struct {
 	userID    id.UserID
 	portalID  networkid.PortalID
@@ -105,13 +105,11 @@ type recentMention struct {
 // Set to 5 seconds to allow for network delays. Only 1 image is allowed per mention.
 const recentMentionWindow = 5 * time.Second
 
-// ClaudeClient represents a client connection to Claude (API or Web).
-type ClaudeClient struct {
-	MessageClient claudeapi.MessageClient // Can be *claudeapi.Client or *claudeapi.WebClient
+// PerplexityClient represents a client connection to Perplexity via sidecar.
+type PerplexityClient struct {
+	MessageClient perplexityapi.MessageClient // Sidecar client
 	UserLogin     *bridgev2.UserLogin
-	Connector     *ClaudeConnector
-	conversations map[networkid.PortalID]*claudeapi.ConversationManager
-	convMu        sync.RWMutex
+	Connector     *PerplexityConnector
 
 	// Rate limiting
 	rateLimiter *RateLimiter
@@ -213,30 +211,24 @@ func (r *RateLimiter) WaitTime() time.Duration {
 }
 
 var (
-	_ bridgev2.NetworkAPI                    = (*ClaudeClient)(nil)
-	_ bridgev2.IdentifierResolvingNetworkAPI = (*ClaudeClient)(nil)
-	_ bridgev2.MembershipHandlingNetworkAPI  = (*ClaudeClient)(nil)
+	_ bridgev2.NetworkAPI                    = (*PerplexityClient)(nil)
+	_ bridgev2.IdentifierResolvingNetworkAPI = (*PerplexityClient)(nil)
+	_ bridgev2.MembershipHandlingNetworkAPI  = (*PerplexityClient)(nil)
 )
 
 // Connect is called when the client should connect.
-func (c *ClaudeClient) Connect(ctx context.Context) {
+func (c *PerplexityClient) Connect(ctx context.Context) {
 	// Create a cancellable context derived from parent for proper propagation
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
-	// Start conversation cleanup goroutine if max age is configured
-	if c.Connector.Config.ConversationMaxAge > 0 {
-		c.wg.Add(1)
-		go c.conversationCleanupLoop()
-	}
-
-	c.Connector.Log.Info().Msg("Claude client ready")
+	c.Connector.Log.Info().Msg("Perplexity client ready")
 	c.UserLogin.BridgeState.Send(status.BridgeState{
 		StateEvent: status.StateConnected,
 	})
 }
 
 // Disconnect is called when the client should disconnect.
-func (c *ClaudeClient) Disconnect() {
+func (c *PerplexityClient) Disconnect() {
 	// Cancel context to stop all goroutines
 	if c.cancel != nil {
 		c.cancel()
@@ -245,104 +237,28 @@ func (c *ClaudeClient) Disconnect() {
 	// Wait for all goroutines to finish
 	c.wg.Wait()
 
-	c.Connector.Log.Info().Msg("Claude client disconnected")
-}
-
-// conversationCleanupLoop periodically cleans up expired conversations.
-func (c *ClaudeClient) conversationCleanupLoop() {
-	defer c.wg.Done()
-	defer func() {
-		if r := recover(); r != nil {
-			c.Connector.Log.Error().Interface("panic", r).Msg("Panic in conversation cleanup goroutine")
-		}
-	}()
-
-	maxAge := time.Duration(c.Connector.Config.ConversationMaxAge) * time.Hour
-	ticker := time.NewTicker(10 * time.Minute) // Check every 10 minutes
-	defer ticker.Stop()
-
-	c.Connector.Log.Debug().
-		Dur("max_age", maxAge).
-		Msg("Conversation cleanup loop started")
-
-	for {
-		select {
-		case <-c.ctx.Done():
-			c.Connector.Log.Debug().Msg("Conversation cleanup loop stopped")
-			return
-		case <-ticker.C:
-			c.cleanupExpiredConversations(maxAge)
-		}
-	}
-}
-
-// cleanupExpiredConversations removes conversations that have exceeded the max age.
-func (c *ClaudeClient) cleanupExpiredConversations(maxAge time.Duration) {
-	c.convMu.Lock()
-	defer c.convMu.Unlock()
-
-	expired := make([]networkid.PortalID, 0)
-
-	for portalID, cm := range c.conversations {
-		if cm.IsExpired(maxAge) {
-			expired = append(expired, portalID)
-		}
-	}
-
-	for _, portalID := range expired {
-		delete(c.conversations, portalID)
-		c.Connector.Log.Debug().
-			Str("portal_id", string(portalID)).
-			Msg("Cleaned up expired conversation")
-	}
-
-	if len(expired) > 0 {
-		c.Connector.Log.Info().
-			Int("count", len(expired)).
-			Msg("Cleaned up expired conversations")
-	}
+	c.Connector.Log.Info().Msg("Perplexity client disconnected")
 }
 
 // IsLoggedIn checks if the client is logged in.
-func (c *ClaudeClient) IsLoggedIn() bool {
+func (c *PerplexityClient) IsLoggedIn() bool {
 	return c.MessageClient != nil
 }
 
 // LogoutRemote logs out from the remote service.
-// For API key logins: no remote cleanup needed (key remains valid until revoked at console.anthropic.com).
-// For sidecar logins: cleans up stored Claude Code credentials on the sidecar.
-func (c *ClaudeClient) LogoutRemote(ctx context.Context) {
+// For Perplexity sidecar logins, this clears the stored session on the sidecar.
+func (c *PerplexityClient) LogoutRemote(ctx context.Context) {
 	log := c.Connector.Log.With().
 		Str("user", string(c.UserLogin.UserMXID)).
 		Str("login_id", string(c.UserLogin.ID)).
 		Logger()
 
-	// Check if this is a sidecar login
-	meta, ok := c.UserLogin.Metadata.(*UserLoginMetadata)
-	if !ok || meta == nil {
-		return
-	}
-
-	// For sidecar logins, clean up stored credentials
-	if meta.CredentialsJSON != "" && c.Connector.Config.Sidecar.Enabled {
-		sidecarClient := sidecar.NewClient(
-			c.Connector.Config.Sidecar.GetURL(),
-			time.Duration(c.Connector.Config.Sidecar.GetTimeout())*time.Second,
-			c.Connector.Log,
-		)
-
-		// Use the Matrix user ID as the user identifier (same as used during login)
-		userID := string(c.UserLogin.UserMXID)
-		if err := sidecarClient.DeleteUser(ctx, userID); err != nil {
-			log.Warn().Err(err).Msg("Failed to clean up sidecar credentials during logout")
-		} else {
-			log.Info().Msg("Cleaned up sidecar credentials")
-		}
-	}
+	// Perplexity uses API key auth stored in config, no per-user cleanup needed
+	log.Info().Msg("Logout complete")
 }
 
 // getAPIKey returns the API key from the user login metadata.
-func (c *ClaudeClient) getAPIKey() string {
+func (c *PerplexityClient) getAPIKey() string {
 	if c.UserLogin == nil {
 		return ""
 	}
@@ -354,17 +270,17 @@ func (c *ClaudeClient) getAPIKey() string {
 }
 
 // IsThisUser checks if a user ID belongs to this logged-in user.
-func (c *ClaudeClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
-	// All Claude ghosts belong to the system, not individual users
+func (c *PerplexityClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
+	// All Perplexity ghosts belong to the system, not individual users
 	return false
 }
 
-// isClaudeMentioned checks if the Claude ghost is mentioned in the message.
-func (c *ClaudeClient) isClaudeMentioned(msg *bridgev2.MatrixMessage) bool {
+// isPerplexityMentioned checks if the Perplexity ghost is mentioned in the message.
+func (c *PerplexityClient) isPerplexityMentioned(msg *bridgev2.MatrixMessage) bool {
 	// Check formatted body for mentions (HTML format)
 	if msg.Content.FormattedBody != "" {
-		// Look for mention pill: <a href="https://matrix.to/#/@claude_
-		if strings.Contains(msg.Content.FormattedBody, "/@claude_") {
+		// Look for mention pill: <a href="https://matrix.to/#/@perplexity_
+		if strings.Contains(msg.Content.FormattedBody, "/@perplexity_") {
 			return true
 		}
 		// Also check for the ghost's MXID directly
@@ -372,21 +288,21 @@ func (c *ClaudeClient) isClaudeMentioned(msg *bridgev2.MatrixMessage) bool {
 		if meta, ok := msg.Portal.Metadata.(*PortalMetadata); ok && meta != nil && meta.Model != "" {
 			model = meta.Model
 		}
-		ghostID := c.Connector.MakeClaudeGhostID(model)
-		ghostMXID := fmt.Sprintf("@claude_%s:", ghostID)
+		ghostID := c.Connector.MakePerplexityGhostID(model)
+		ghostMXID := fmt.Sprintf("@perplexity_%s:", ghostID)
 		if strings.Contains(msg.Content.FormattedBody, ghostMXID) {
 			return true
 		}
 	}
 
-	// Check plain text body for @claude mentions
+	// Check plain text body for @perplexity mentions
 	body := strings.ToLower(msg.Content.Body)
-	if strings.Contains(body, "@claude") {
+	if strings.Contains(body, "@perplexity") {
 		return true
 	}
 
 	// Check for display name mentions (case insensitive)
-	if strings.Contains(body, "claude") && (strings.HasPrefix(body, "claude") || strings.Contains(body, " claude") || strings.Contains(body, "@claude")) {
+	if strings.Contains(body, "perplexity") && (strings.HasPrefix(body, "perplexity") || strings.Contains(body, " perplexity") || strings.Contains(body, "@perplexity")) {
 		return true
 	}
 
@@ -394,16 +310,16 @@ func (c *ClaudeClient) isClaudeMentioned(msg *bridgev2.MatrixMessage) bool {
 }
 
 // isMentionOnlyMessage checks if the message contains only a mention with no real content.
-// Used to detect messages like "@claude_sonnet:server.com" that are just triggering image processing.
-func (c *ClaudeClient) isMentionOnlyMessage(msg *bridgev2.MatrixMessage) bool {
+// Used to detect messages like "@perplexity_sonar:server.com" that are just triggering image processing.
+func (c *PerplexityClient) isMentionOnlyMessage(msg *bridgev2.MatrixMessage) bool {
 	// Get the plain text body
 	body := strings.TrimSpace(msg.Content.Body)
 
-	// Remove Matrix MXIDs that start with @claude (e.g., @claude_sonnet:server.com)
+	// Remove Matrix MXIDs that start with @perplexity (e.g., @perplexity_sonar:server.com)
 	// These are the actual mention format in Matrix
 	cleaned := body
 	for {
-		atIdx := strings.Index(strings.ToLower(cleaned), "@claude")
+		atIdx := strings.Index(strings.ToLower(cleaned), "@perplexity")
 		if atIdx == -1 {
 			break
 		}
@@ -420,9 +336,9 @@ func (c *ClaudeClient) isMentionOnlyMessage(msg *bridgev2.MatrixMessage) bool {
 		cleaned = cleaned[:atIdx] + cleaned[endIdx:]
 	}
 
-	// Remove standalone "Claude" (display name mention)
-	cleaned = strings.ReplaceAll(cleaned, "Claude", "")
-	cleaned = strings.ReplaceAll(cleaned, "claude", "")
+	// Remove standalone "Perplexity" (display name mention)
+	cleaned = strings.ReplaceAll(cleaned, "Perplexity", "")
+	cleaned = strings.ReplaceAll(cleaned, "perplexity", "")
 
 	// Remove common punctuation that might follow a mention
 	cleaned = strings.TrimSpace(cleaned)
@@ -433,9 +349,9 @@ func (c *ClaudeClient) isMentionOnlyMessage(msg *bridgev2.MatrixMessage) bool {
 	return len(cleaned) == 0
 }
 
-// recordMention records that a user mentioned Claude in a portal.
+// recordMention records that a user mentioned Perplexity in a portal.
 // This allows subsequent images from the same user to be processed.
-func (c *ClaudeClient) recordMention(userID id.UserID, portalID networkid.PortalID) {
+func (c *PerplexityClient) recordMention(userID id.UserID, portalID networkid.PortalID) {
 	c.mentionMu.Lock()
 	defer c.mentionMu.Unlock()
 
@@ -459,10 +375,10 @@ func (c *ClaudeClient) recordMention(userID id.UserID, portalID networkid.Portal
 	c.recentMentions = validMentions
 }
 
-// consumeRecentMention checks if a user has recently mentioned Claude in a portal.
+// consumeRecentMention checks if a user has recently mentioned Perplexity in a portal.
 // If found, it removes the mention (allowing only 1 image per mention).
 // Used to allow images that immediately follow a mention message.
-func (c *ClaudeClient) consumeRecentMention(userID id.UserID, portalID networkid.PortalID) bool {
+func (c *PerplexityClient) consumeRecentMention(userID id.UserID, portalID networkid.PortalID) bool {
 	c.mentionMu.Lock()
 	defer c.mentionMu.Unlock()
 
@@ -477,27 +393,8 @@ func (c *ClaudeClient) consumeRecentMention(userID id.UserID, portalID networkid
 	return false
 }
 
-// getConversationManager gets or creates a conversation manager for a portal.
-func (c *ClaudeClient) getConversationManager(portal *bridgev2.Portal) *claudeapi.ConversationManager {
-	c.convMu.Lock()
-	defer c.convMu.Unlock()
-
-	portalID := portal.PortalKey.ID
-
-	if cm, ok := c.conversations[portalID]; ok {
-		return cm
-	}
-
-	// Create new conversation manager with max tokens from config
-	maxTokens := claudeapi.GetModelMaxTokens(c.Connector.Config.GetDefaultModel())
-	cm := claudeapi.NewConversationManager(maxTokens)
-	c.conversations[portalID] = cm
-
-	return cm
-}
-
-// HandleMatrixMessage handles a message sent from Matrix to Claude.
-func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+// HandleMatrixMessage handles a message sent from Matrix to Perplexity.
+func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
 	// Get portal metadata, use defaults if not available
 	meta, _ := msg.Portal.Metadata.(*PortalMetadata)
 	if meta == nil {
@@ -519,12 +416,12 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 
 	// Check mention-only mode
 	if meta.MentionOnly {
-		mentioned := c.isClaudeMentioned(msg)
+		mentioned := c.isPerplexityMentioned(msg)
 		isImage := msg.Content.MsgType == event.MsgImage
 
 		if mentioned {
-			// Check if this is a mention-only message (e.g., just "@claude" with no real content)
-			// These are typically sent as captions for images, so don't send to Claude - wait for the image
+			// Check if this is a mention-only message (e.g., just "@perplexity" with no real content)
+			// These are typically sent as captions for images, so don't send to Perplexity - wait for the image
 			// BUT if this message IS already an image (phone sends image+mention as single message), process it now
 			if c.isMentionOnlyMessage(msg) && !isImage {
 				// Only record mention for image-waiting when we're actually waiting for an image
@@ -532,12 +429,12 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 				c.Connector.Log.Debug().Msg("Mention-only mode: Mention-only message (no content), waiting for image")
 				return &bridgev2.MatrixMessageResponse{}, nil
 			}
-			c.Connector.Log.Debug().Msg("Mention-only mode: Claude mentioned, processing message")
+			c.Connector.Log.Debug().Msg("Mention-only mode: Perplexity mentioned, processing message")
 		} else if isImage && c.consumeRecentMention(msg.Event.Sender, msg.Portal.PortalKey.ID) {
 			// Image immediately following a mention - process it (one image per mention)
 			c.Connector.Log.Debug().Msg("Mention-only mode: Image following recent mention, processing")
 		} else {
-			c.Connector.Log.Debug().Msg("Mention-only mode: Claude not mentioned, ignoring message")
+			c.Connector.Log.Debug().Msg("Mention-only mode: Perplexity not mentioned, ignoring message")
 			// Return empty response to indicate message was handled but no action taken
 			return &bridgev2.MatrixMessageResponse{}, nil
 		}
@@ -558,9 +455,6 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		return nil, fmt.Errorf("%s", errMsg)
 	}
 
-	// Get or create conversation manager for this portal
-	convMgr := c.getConversationManager(msg.Portal)
-
 	// Get sender display name for multi-user awareness
 	senderName := msg.Event.Sender.String() // Fallback to MXID
 	if memberInfo, err := c.Connector.br.Matrix.GetMemberInfo(ctx, msg.Portal.MXID, msg.Event.Sender); err == nil && memberInfo != nil && memberInfo.Displayname != "" {
@@ -569,7 +463,7 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 
 	// Build content array based on message type
 	userMsgID := string(msg.Event.ID)
-	var messageContent []claudeapi.Content
+	var messageContent []perplexityapi.Content
 
 	// Handle different message types
 	switch msg.Content.MsgType {
@@ -588,13 +482,13 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		if msg.Content.Body != "" && msg.Content.Body != msg.Content.FileName {
 			// Use getMessageText to preserve display names in mentions
 			captionText := getMessageText(msg.Content)
-			messageContent = append(messageContent, claudeapi.Content{
+			messageContent = append(messageContent, perplexityapi.Content{
 				Type: "text",
 				Text: fmt.Sprintf("[%s]: %s", senderName, captionText),
 			})
 		} else {
 			// Add a default prompt for image analysis (with sender name)
-			messageContent = append(messageContent, claudeapi.Content{
+			messageContent = append(messageContent, perplexityapi.Content{
 				Type: "text",
 				Text: fmt.Sprintf("[%s]: What's in this image?", senderName),
 			})
@@ -602,7 +496,7 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 
 		c.Connector.Log.Info().
 			Int("content_parts", len(messageContent)).
-			Msg("Processing image message with Claude Vision")
+			Msg("Processing image message with Perplexity Vision")
 
 	default:
 		// Text message (or other text-based types)
@@ -615,9 +509,9 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		if err := ValidateMessageLength(messageText); err != nil {
 			return nil, err
 		}
-		// Prepend sender name so Claude knows who's talking
+		// Prepend sender name so Perplexity knows who's talking
 		textWithSender := fmt.Sprintf("[%s]: %s", senderName, messageText)
-		messageContent = append(messageContent, claudeapi.Content{
+		messageContent = append(messageContent, perplexityapi.Content{
 			Type: "text",
 			Text: textWithSender,
 		})
@@ -629,34 +523,6 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		model = c.Connector.Config.GetDefaultModel()
 	}
 
-	// Check if we're in sidecar mode (must do this before model resolution)
-	isSidecarMode := c.MessageClient.GetClientType() == "sidecar"
-
-	// Resolve family names (sonnet, opus, haiku) to actual model IDs
-	// For sidecar mode, skip API resolution - the Agent SDK handles family names directly
-	if IsModelFamily(model) && !isSidecarMode {
-		family := GetModelFamilyName(model)
-		apiKey := c.getAPIKey()
-		if apiKey == "" {
-			errMsg := "No API key configured"
-			c.sendErrorToRoom(ctx, msg.Portal, errMsg)
-			return nil, errors.New(errMsg)
-		}
-
-		resolvedModel, err := claudeapi.GetLatestModelByFamilyFromAPI(ctx, apiKey, family)
-		if err != nil {
-			c.Connector.Log.Error().Err(err).Str("family", family).Msg("Failed to resolve model family")
-			errMsg := fmt.Sprintf("Failed to resolve model '%s': %v", model, err)
-			c.sendErrorToRoom(ctx, msg.Portal, errMsg)
-			return nil, errors.New(errMsg)
-		}
-		c.Connector.Log.Debug().
-			Str("family", family).
-			Str("resolved", resolvedModel).
-			Msg("Resolved model family to latest version")
-		model = resolvedModel
-	}
-
 	temperature := meta.GetTemperature(c.Connector.Config.GetTemperature())
 
 	systemPrompt := meta.SystemPrompt
@@ -664,92 +530,28 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		systemPrompt = c.Connector.Config.GetSystemPrompt()
 	}
 
-	// Build messages for API request
-	// For sidecar mode: only send current message (sidecar handles history via session resume)
-	// For API mode: send existing history + new user message
-	userMessage := claudeapi.Message{
+	// Build message for API request - sidecar handles history via session resume
+	userMessage := perplexityapi.Message{
 		Role:    "user",
 		Content: messageContent,
 	}
 
-	var messagesForAPI []claudeapi.Message
-	var enableCaching bool
-
-	if isSidecarMode {
-		// Sidecar handles conversation history via Agent SDK session resume
-		messagesForAPI = []claudeapi.Message{userMessage}
-	} else {
-		// API mode: include local conversation history
-		// Record first message time for caching window tracking
-		convMgr.RecordFirstMessage()
-
-		// Check if compaction is needed before adding new message
-		if convMgr.NeedsCompaction() {
-			c.Connector.Log.Info().
-				Int("estimated_tokens", convMgr.EstimatedTokens()).
-				Int("max_tokens", convMgr.GetMaxTokens()).
-				Int("compaction_count", convMgr.CompactionCount()).
-				Msg("Context approaching limit, triggering compaction")
-
-			// Get conversation text for summarization
-			conversationText := convMgr.GetMessagesForCompaction()
-
-			// Call Claude to generate a summary (using the direct API client)
-			if apiClient, ok := c.MessageClient.(*claudeapi.Client); ok {
-				summary, err := apiClient.CompactConversation(ctx, model, conversationText)
-				if err != nil {
-					c.Connector.Log.Error().Err(err).Msg("Failed to compact conversation, continuing with full history")
-				} else {
-					// Apply compaction, keeping the last 2 messages (most recent exchange)
-					convMgr.ApplyCompaction(summary, 2)
-					c.Connector.Log.Info().
-						Int("new_message_count", convMgr.MessageCount()).
-						Int("new_estimated_tokens", convMgr.EstimatedTokens()).
-						Msg("Conversation compacted successfully")
-
-					// Notify user that compaction occurred
-					c.sendCompactionNotice(ctx, msg.Portal)
-				}
-			}
-		}
-
-		existingMessages := convMgr.GetMessages()
-		messagesForAPI = append(existingMessages, userMessage)
-
-		// Enable caching if conditions are met (2nd+ message within 5 min window, enough tokens)
-		enableCaching = convMgr.ShouldEnableCaching()
-		if enableCaching {
-			c.Connector.Log.Debug().
-				Int("message_count", convMgr.MessageCount()).
-				Int("estimated_tokens", convMgr.EstimatedTokens()).
-				Msg("Enabling prompt caching for this request")
-		}
+	req := &perplexityapi.CreateMessageRequest{
+		Model:       model,
+		Messages:    []perplexityapi.Message{userMessage},
+		MaxTokens:   c.Connector.Config.GetMaxTokens(),
+		Temperature: temperature,
+		System:      systemPrompt,
+		Stream:      true, // Use streaming for better UX
 	}
 
-	req := &claudeapi.CreateMessageRequest{
-		Model:         model,
-		Messages:      messagesForAPI,
-		MaxTokens:     c.Connector.Config.GetMaxTokens(),
-		Temperature:   temperature,
-		System:        systemPrompt,
-		Stream:        true, // Use streaming for better UX
-		EnableCaching: enableCaching,
-	}
-
-	// Send to Claude API (add portal ID context for sidecar session isolation)
+	// Send to Perplexity API (add portal ID context for sidecar session isolation)
 	ctx = sidecar.WithPortalID(ctx, string(msg.Portal.PortalKey.ID))
 
 	// Add user credentials for per-user sidecar sessions
-	if metadata, ok := c.UserLogin.Metadata.(*UserLoginMetadata); ok && metadata.CredentialsJSON != "" {
-		ctx = sidecar.WithUserCredentials(ctx, string(c.UserLogin.UserMXID), metadata.CredentialsJSON)
-	}
-
-	// Add session ID for sidecar resume (stored in bridge DB portal metadata)
-	if isSidecarMode && meta.SidecarSessionID != "" {
-		ctx = sidecar.WithSessionID(ctx, meta.SidecarSessionID)
-		c.Connector.Log.Debug().
-			Str("session_id", meta.SidecarSessionID).
-			Msg("Resuming sidecar session from bridge DB")
+	apiKey := c.getAPIKey()
+	if apiKey != "" {
+		ctx = sidecar.WithUserCredentials(ctx, string(c.UserLogin.UserMXID), apiKey)
 	}
 
 	// Create a context with timeout for the sidecar call to prevent hanging forever
@@ -760,7 +562,7 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 	}
 
 	// Get ghost intent for typing notification
-	ghostID := c.Connector.MakeClaudeGhostID(model)
+	ghostID := c.Connector.MakePerplexityGhostID(model)
 	ghost, err := c.Connector.GetOrUpdateGhost(ctx, ghostID, model)
 	if err != nil {
 		c.Connector.Log.Warn().Err(err).Str("ghost_id", string(ghostID)).Msg("Failed to get ghost for typing indicator")
@@ -792,23 +594,22 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 	}
 	if stream == nil {
 		stopTyping()
-		errMsg := "received nil stream from Claude API"
+		errMsg := "received nil stream from Perplexity API"
 		c.sendErrorToRoom(ctx, msg.Portal, errMsg)
 		return nil, errors.New(errMsg)
 	}
 
 	// Collect response
 	var responseText strings.Builder
-	var claudeMessageID string
+	var perplexityMessageID string
 	var inputTokens, outputTokens int
 	var streamError error
-	var newSessionID string // Agent SDK session ID from sidecar (for resume)
 
 	for event := range stream {
 		switch event.Type {
 		case "message_start":
 			if event.Message != nil {
-				claudeMessageID = event.Message.ID
+				perplexityMessageID = event.Message.ID
 				if event.Message.Usage != nil && event.Message.Usage.InputTokens > 0 {
 					inputTokens = event.Message.Usage.InputTokens
 				}
@@ -820,9 +621,6 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		case "message_delta":
 			if event.Usage != nil {
 				outputTokens = event.Usage.OutputTokens
-			}
-			if event.SessionID != "" {
-				newSessionID = event.SessionID
 			}
 		case "error":
 			c.Connector.Log.Error().Interface("event", event).Msg("Error in stream")
@@ -857,51 +655,16 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 		return nil, friendlyErr
 	}
 
-	if claudeMessageID == "" {
-		claudeMessageID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	if perplexityMessageID == "" {
+		perplexityMessageID = fmt.Sprintf("msg_%d", time.Now().UnixNano())
 	}
 
 	// Validate response content
 	responseContent := responseText.String()
 	if responseContent == "" {
-		errMsg := "received empty response from Claude"
+		errMsg := "received empty response from Perplexity"
 		c.sendErrorToRoom(ctx, msg.Portal, errMsg)
 		return nil, errors.New(errMsg)
-	}
-
-	// Store sidecar session ID for resume (persisted in bridge DB)
-	if isSidecarMode && newSessionID != "" && newSessionID != meta.SidecarSessionID {
-		meta.SidecarSessionID = newSessionID
-		msg.Portal.Metadata = meta
-		if err := msg.Portal.Save(ctx); err != nil {
-			c.Connector.Log.Warn().Err(err).
-				Str("session_id", newSessionID).
-				Msg("Failed to save sidecar session ID to portal metadata")
-		} else {
-			c.Connector.Log.Debug().
-				Str("session_id", newSessionID).
-				Msg("Saved sidecar session ID to bridge DB for resume")
-		}
-	}
-
-	// Only track conversation history locally for API mode
-	// Sidecar mode handles history via Agent SDK session resume
-	if !isSidecarMode {
-		// Add messages to conversation history AFTER successful API response
-		// This prevents conversation state corruption if API fails
-		convMgr.AddMessageWithContent("user", messageContent, userMsgID)
-		convMgr.AddMessageWithID("assistant", responseContent, claudeMessageID)
-
-		c.Connector.Log.Debug().
-			Str("portal_id", string(msg.Portal.PortalKey.ID)).
-			Int("message_count", convMgr.MessageCount()).
-			Int("estimated_tokens", convMgr.EstimatedTokens()).
-			Msg("Added messages to conversation history")
-
-		// Trim conversation if needed
-		if err := convMgr.TrimToTokenLimit(); err != nil {
-			c.Connector.Log.Warn().Err(err).Msg("Failed to trim conversation")
-		}
 	}
 
 	// Queue the assistant's response as an incoming message
@@ -914,25 +677,25 @@ func (c *ClaudeClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.Ma
 				c.Connector.Log.Error().Interface("panic", r).Msg("Panic in assistant response goroutine")
 			}
 		}()
-		c.queueAssistantResponse(msg.Portal, responseContent, claudeMessageID, inputTokens+outputTokens)
+		c.queueAssistantResponse(msg.Portal, responseContent, perplexityMessageID, inputTokens+outputTokens)
 	}()
 
-	// Return response metadata for the outgoing (user -> Claude) message
-	// Use a unique ID based on user's Matrix event ID to avoid collision with Claude's response ID
+	// Return response metadata for the outgoing (user -> Perplexity) message
+	// Use a unique ID based on user's Matrix event ID to avoid collision with Perplexity's response ID
 	return &bridgev2.MatrixMessageResponse{
 		DB: &database.Message{
 			ID:        networkid.MessageID("user_" + userMsgID),
 			Timestamp: time.Now(),
 			Metadata: &MessageMetadata{
-				ClaudeMessageID: "user_" + userMsgID,
-				TokensUsed:      0, // User messages don't have token usage
+				PerplexityMessageID: "user_" + userMsgID,
+				TokensUsed:          0, // User messages don't have token usage
 			},
 		},
 	}, nil
 }
 
 // formatUserFriendlyError converts API errors to user-friendly messages.
-func (c *ClaudeClient) formatUserFriendlyError(err error) error {
+func (c *PerplexityClient) formatUserFriendlyError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -941,30 +704,34 @@ func (c *ClaudeClient) formatUserFriendlyError(err error) error {
 
 	// Check for sidecar auth errors (credentials expired/invalid)
 	if strings.Contains(errStr, "credentials") && (strings.Contains(errStr, "expired") || strings.Contains(errStr, "re-login")) {
-		return fmt.Errorf("your Claude credentials have expired. Please use the 'logout' command, then log in again with fresh credentials")
+		return fmt.Errorf("your Perplexity credentials have expired. Please use the 'logout' command, then log in again with fresh credentials")
 	}
 	if strings.Contains(errStr, "authentication failed") || strings.Contains(errStr, "401") {
 		return fmt.Errorf("authentication failed. Your credentials may have expired - please use 'logout' then log in again")
 	}
 
 	// Check for specific error types
-	if claudeapi.IsRateLimitError(err) {
-		retryAfter := claudeapi.GetRetryAfter(err)
+	if perplexityapi.IsRateLimitError(err) {
+		retryAfter := perplexityapi.GetRetryAfter(err)
 		if retryAfter > 0 {
 			return fmt.Errorf("rate limit exceeded. Please wait %s and try again", retryAfter.Round(time.Second))
 		}
 		return fmt.Errorf("rate limit exceeded. Please wait a moment and try again")
 	}
 
-	if claudeapi.IsAuthError(err) {
+	if perplexityapi.IsAuthError(err) {
 		return fmt.Errorf("authentication failed. Please check your API key is valid and has sufficient permissions")
 	}
 
-	if claudeapi.IsOverloadedError(err) {
-		return fmt.Errorf("Claude is currently overloaded. Please try again in a few moments")
+	if perplexityapi.IsInsufficientCreditsError(err) {
+		return fmt.Errorf("insufficient credits. Please add credits to your Perplexity account")
 	}
 
-	if claudeapi.IsInvalidRequestError(err) {
+	if perplexityapi.IsOverloadedError(err) {
+		return fmt.Errorf("Perplexity is currently overloaded. Please try again in a few moments")
+	}
+
+	if perplexityapi.IsInvalidRequestError(err) {
 		// Don't leak full error details to user - log internally instead
 		c.Connector.Log.Debug().Err(err).Msg("Invalid request error details")
 		return fmt.Errorf("invalid request: please check your message and try again")
@@ -972,49 +739,11 @@ func (c *ClaudeClient) formatUserFriendlyError(err error) error {
 
 	// Generic error - don't leak internal details to users
 	c.Connector.Log.Debug().Err(err).Msg("API error details")
-	return fmt.Errorf("failed to send message to Claude. Please try again later")
-}
-
-// sendCompactionNotice sends a notice to the Matrix room that context was compacted.
-func (c *ClaudeClient) sendCompactionNotice(ctx context.Context, portal *bridgev2.Portal) {
-	if ctx == nil || ctx.Err() != nil {
-		return
-	}
-
-	notice := "ℹ️ Context limit approaching. Conversation history has been summarized to continue."
-
-	c.UserLogin.QueueRemoteEvent(&simplevent.Message[*MessageMetadata]{
-		EventMeta: simplevent.EventMeta{
-			Type: bridgev2.RemoteEventMessage,
-			LogContext: func(lc zerolog.Context) zerolog.Context {
-				return lc.Str("compaction_notice", "true")
-			},
-			PortalKey: portal.PortalKey,
-			Sender:    bridgev2.EventSender{Sender: c.Connector.MakeClaudeGhostID("system")},
-			Timestamp: time.Now(),
-		},
-		ID: networkid.MessageID(fmt.Sprintf("compaction_%d", time.Now().UnixNano())),
-		Data: &MessageMetadata{
-			ClaudeMessageID: "compaction",
-		},
-		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data *MessageMetadata) (*bridgev2.ConvertedMessage, error) {
-			return &bridgev2.ConvertedMessage{
-				Parts: []*bridgev2.ConvertedMessagePart{
-					{
-						Type: event.EventMessage,
-						Content: &event.MessageEventContent{
-							MsgType: event.MsgNotice,
-							Body:    notice,
-						},
-					},
-				},
-			}, nil
-		},
-	})
+	return fmt.Errorf("failed to send message to Perplexity. Please try again later")
 }
 
 // sendErrorToRoom sends an error message to the Matrix room so the user knows what happened.
-func (c *ClaudeClient) sendErrorToRoom(ctx context.Context, portal *bridgev2.Portal, errorMsg string) {
+func (c *PerplexityClient) sendErrorToRoom(ctx context.Context, portal *bridgev2.Portal, errorMsg string) {
 	if ctx == nil || ctx.Err() != nil {
 		return
 	}
@@ -1027,12 +756,12 @@ func (c *ClaudeClient) sendErrorToRoom(ctx context.Context, portal *bridgev2.Por
 				return lc.Str("error_notice", "true")
 			},
 			PortalKey: portal.PortalKey,
-			Sender:    bridgev2.EventSender{Sender: c.Connector.MakeClaudeGhostID("error")},
+			Sender:    bridgev2.EventSender{Sender: c.Connector.MakePerplexityGhostID("error")},
 			Timestamp: time.Now(),
 		},
 		ID: networkid.MessageID(fmt.Sprintf("error_%d", time.Now().UnixNano())),
 		Data: &MessageMetadata{
-			ClaudeMessageID: "error",
+			PerplexityMessageID: "error",
 		},
 		ConvertMessageFunc: func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, data *MessageMetadata) (*bridgev2.ConvertedMessage, error) {
 			return &bridgev2.ConvertedMessage{
@@ -1060,16 +789,21 @@ const MinMessageSize = 2000
 
 // queueAssistantResponse sends the assistant's message to the Matrix room.
 // If the message is too large (M_TOO_LARGE), it recursively splits and retries.
-func (c *ClaudeClient) queueAssistantResponse(portal *bridgev2.Portal, text, messageID string, tokensUsed int) {
+func (c *PerplexityClient) queueAssistantResponse(portal *bridgev2.Portal, text, messageID string, tokensUsed int) {
 	model := c.Connector.Config.GetDefaultModel()
 	if meta, ok := portal.Metadata.(*PortalMetadata); ok && meta != nil && meta.Model != "" {
 		model = meta.Model
 	}
 
-	ghostID := c.Connector.MakeClaudeGhostID(model)
+	ghostID := c.Connector.MakePerplexityGhostID(model)
 
-	// Get the ghost to send messages
-	ctx := context.Background()
+	// Use the client's context if available, otherwise create a new one with timeout
+	ctx := c.ctx
+	if ctx == nil || ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+	}
 	ghost, err := c.Connector.GetOrUpdateGhost(ctx, ghostID, model)
 	if err != nil {
 		c.Connector.Log.Error().Err(err).Str("ghost_id", string(ghostID)).Msg("Failed to get ghost for message sending")
@@ -1081,7 +815,17 @@ func (c *ClaudeClient) queueAssistantResponse(portal *bridgev2.Portal, text, mes
 }
 
 // sendMessageWithRetry sends a message, and if it gets M_TOO_LARGE, splits and retries.
-func (c *ClaudeClient) sendMessageWithRetry(ctx context.Context, portal *bridgev2.Portal, ghost *bridgev2.Ghost, text, messageID string, tokensUsed int, maxSize int) {
+func (c *PerplexityClient) sendMessageWithRetry(ctx context.Context, portal *bridgev2.Portal, ghost *bridgev2.Ghost, text, messageID string, tokensUsed int, maxSize int) {
+	// Validate inputs
+	if ghost == nil || ghost.Intent == nil {
+		c.Connector.Log.Error().Str("message_id", messageID).Msg("Cannot send message: ghost or intent is nil")
+		return
+	}
+	if portal == nil || portal.MXID == "" {
+		c.Connector.Log.Error().Str("message_id", messageID).Msg("Cannot send message: portal or MXID is nil/empty")
+		return
+	}
+
 	// Split message at current size limit
 	parts := splitMessage(text, maxSize)
 
@@ -1148,14 +892,18 @@ func (c *ClaudeClient) sendMessageWithRetry(ctx context.Context, portal *bridgev
 			Int("parts", len(parts)).
 			Int("total_size", len(text)).
 			Int("max_size", maxSize).
-			Msg("Split large Claude response into multiple messages")
+			Msg("Split large Perplexity response into multiple messages")
 	}
 }
 
 // sendSizeErrorNotice sends an error notice when a message is too large to send
 // even after splitting to minimum size. This is rare and indicates unusual content.
-func (c *ClaudeClient) sendSizeErrorNotice(ctx context.Context, portal *bridgev2.Portal, ghost *bridgev2.Ghost) {
-	notice := "⚠️ Part of Claude's response could not be delivered due to Matrix size limits."
+func (c *PerplexityClient) sendSizeErrorNotice(ctx context.Context, portal *bridgev2.Portal, ghost *bridgev2.Ghost) {
+	if ghost == nil || ghost.Intent == nil || portal == nil || portal.MXID == "" {
+		c.Connector.Log.Error().Msg("Cannot send size error notice: ghost/intent/portal is nil")
+		return
+	}
+	notice := "Part of Perplexity's response could not be delivered due to Matrix size limits."
 	content := &event.MessageEventContent{
 		MsgType: event.MsgNotice,
 		Body:    notice,
@@ -1231,7 +979,7 @@ func findSplitPoint(text string, maxSize int) int {
 }
 
 // GetCapabilities returns the capabilities for a specific portal.
-func (c *ClaudeClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
+func (c *PerplexityClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
 	return &event.RoomFeatures{
 		Formatting: event.FormattingFeatureMap{
 			event.FmtBold:          event.CapLevelFullySupported,
@@ -1241,9 +989,9 @@ func (c *ClaudeClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 			event.FmtCodeBlock:     event.CapLevelFullySupported,
 		},
 		File: event.FileFeatureMap{
-			// Claude Vision supports these image types
+			// Perplexity Vision supports these image types
 			event.MsgImage: {
-				MaxSize: 20 * 1024 * 1024, // 20MB max for Claude Vision
+				MaxSize: 20 * 1024 * 1024, // 20MB max for Perplexity Vision
 				MimeTypes: map[string]event.CapabilitySupportLevel{
 					"image/jpeg": event.CapLevelFullySupported,
 					"image/png":  event.CapLevelFullySupported,
@@ -1253,119 +1001,59 @@ func (c *ClaudeClient) GetCapabilities(ctx context.Context, portal *bridgev2.Por
 				Caption: event.CapLevelFullySupported, // Support image captions
 			},
 		},
-		MaxTextLength:       100000, // Claude has large context window
-		Edit:                event.CapLevelFullySupported,
-		Delete:              event.CapLevelFullySupported,
+		MaxTextLength:       100000, // Perplexity has large context window
+		Edit:                event.CapLevelUnsupported,
+		Delete:              event.CapLevelUnsupported,
 		Reaction:            event.CapLevelUnsupported,
 		Reply:               event.CapLevelPartialSupport, // Could implement as conversation context
 		ReadReceipts:        false,
-		TypingNotifications: true, // Claude shows "typing" while processing
+		TypingNotifications: true, // Perplexity shows "typing" while processing
 	}
 }
 
 // HandleMatrixEdit handles an edit to a Matrix message.
-// When a user edits a message, we update the conversation history and remove
-// any subsequent messages (since the conversation flow has changed).
-func (c *ClaudeClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.MatrixEdit) error {
-	// Get the conversation manager for this portal
-	convMgr := c.getConversationManager(msg.Portal)
-
-	// Get the original message ID being edited
-	originalMsgID := string(msg.EditTarget.ID)
-
-	// Get the new content (preserve display names in mentions)
-	newContent := getMessageText(msg.Content)
-
-	// Try to edit by the original message ID
-	if convMgr.EditMessageByID(originalMsgID, newContent) {
-		c.Connector.Log.Debug().
-			Str("message_id", originalMsgID).
-			Str("new_content", newContent[:min(50, len(newContent))]).
-			Msg("Edited message in conversation history")
-		return nil
-	}
-
-	// If message not found by ID, try to edit the last user message
-	// This handles cases where the message ID wasn't tracked
-	if err := convMgr.EditLastUserMessage(newContent); err != nil {
-		c.Connector.Log.Warn().
-			Str("message_id", originalMsgID).
-			Err(err).
-			Msg("Could not find message to edit")
-		return fmt.Errorf("message not found in conversation history")
-	}
-
-	c.Connector.Log.Debug().
-		Str("message_id", originalMsgID).
-		Msg("Edited last user message in conversation history")
-	return nil
+// Perplexity sidecar handles conversation history, so edits are not supported.
+func (c *PerplexityClient) HandleMatrixEdit(ctx context.Context, msg *bridgev2.MatrixEdit) error {
+	return fmt.Errorf("message editing is not supported")
 }
 
 // HandleMatrixMessageRemove handles a deletion of a Matrix message.
-// When a user deletes a message, we remove it from the conversation history
-// along with any subsequent messages (since the conversation flow is broken).
-func (c *ClaudeClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
-	// Get the conversation manager for this portal
-	convMgr := c.getConversationManager(msg.Portal)
-
-	// Get the message ID being deleted
-	deletedMsgID := string(msg.TargetMessage.ID)
-
-	// Try to delete by message ID
-	if convMgr.DeleteMessageByID(deletedMsgID) {
-		c.Connector.Log.Debug().
-			Str("message_id", deletedMsgID).
-			Msg("Deleted message from conversation history")
-		return nil
-	}
-
-	// If message not found by ID, try to delete the last user message
-	// This handles cases where the message ID wasn't tracked
-	if err := convMgr.DeleteLastUserMessage(); err != nil {
-		c.Connector.Log.Warn().
-			Str("message_id", deletedMsgID).
-			Err(err).
-			Msg("Could not find message to delete")
-		return fmt.Errorf("message not found in conversation history")
-	}
-
-	c.Connector.Log.Debug().
-		Str("message_id", deletedMsgID).
-		Msg("Deleted last user message from conversation history")
-	return nil
+// Perplexity sidecar handles conversation history, so deletions are not supported.
+func (c *PerplexityClient) HandleMatrixMessageRemove(ctx context.Context, msg *bridgev2.MatrixMessageRemove) error {
+	return fmt.Errorf("message deletion is not supported")
 }
 
 // HandleMatrixReaction handles a reaction to a Matrix message (not supported).
-func (c *ClaudeClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) error {
+func (c *PerplexityClient) HandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) error {
 	return fmt.Errorf("reactions are not supported")
 }
 
 // HandleMatrixReactionRemove handles removal of a reaction (not supported).
-func (c *ClaudeClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) error {
+func (c *PerplexityClient) HandleMatrixReactionRemove(ctx context.Context, msg *bridgev2.MatrixReactionRemove) error {
 	return fmt.Errorf("reactions are not supported")
 }
 
 // HandleMatrixReadReceipt handles a read receipt (not supported).
-func (c *ClaudeClient) HandleMatrixReadReceipt(ctx context.Context, msg *bridgev2.MatrixReadReceipt) error {
+func (c *PerplexityClient) HandleMatrixReadReceipt(ctx context.Context, msg *bridgev2.MatrixReadReceipt) error {
 	// Silently ignore read receipts
 	return nil
 }
 
 // HandleMatrixTyping handles a typing notification (not supported).
-func (c *ClaudeClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.MatrixTyping) error {
+func (c *PerplexityClient) HandleMatrixTyping(ctx context.Context, msg *bridgev2.MatrixTyping) error {
 	// Silently ignore typing notifications
 	return nil
 }
 
 // HandleMatrixMembership handles membership changes including ghost invitations.
-// This allows users to invite Claude ghost users to rooms directly.
-func (c *ClaudeClient) HandleMatrixMembership(ctx context.Context, msg *bridgev2.MatrixMembershipChange) (*bridgev2.MatrixMembershipResult, error) {
+// This allows users to invite Perplexity ghost users to rooms directly.
+func (c *PerplexityClient) HandleMatrixMembership(ctx context.Context, msg *bridgev2.MatrixMembershipChange) (*bridgev2.MatrixMembershipResult, error) {
 	// We only care about invites to ghost users
 	if msg.Type != bridgev2.Invite {
 		return nil, nil
 	}
 
-	// Check if the target is a ghost (Claude bot being invited)
+	// Check if the target is a ghost (Perplexity bot being invited)
 	// GhostOrUserLogin is an interface - use type assertion to check if it's a Ghost
 	ghost, isGhost := msg.Target.(*bridgev2.Ghost)
 	if !isGhost || ghost == nil {
@@ -1375,7 +1063,7 @@ func (c *ClaudeClient) HandleMatrixMembership(ctx context.Context, msg *bridgev2
 	c.Connector.Log.Info().
 		Str("ghost_id", string(ghost.ID)).
 		Str("room_id", string(msg.Portal.MXID)).
-		Msg("Claude ghost invited to room, accepting invitation")
+		Msg("Perplexity ghost invited to room, accepting invitation")
 
 	// Accept the invitation - the bridge framework handles the actual join
 	// Return nil to indicate success and let the framework process it
@@ -1383,79 +1071,79 @@ func (c *ClaudeClient) HandleMatrixMembership(ctx context.Context, msg *bridgev2
 }
 
 // PreHandleMatrixMessage is called before handling a Matrix message.
-func (c *ClaudeClient) PreHandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (bridgev2.MatrixMessageResponse, error) {
+func (c *PerplexityClient) PreHandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (bridgev2.MatrixMessageResponse, error) {
 	// No pre-processing needed
 	return bridgev2.MatrixMessageResponse{}, nil
 }
 
 // GetMetrics returns the API client metrics.
-func (c *ClaudeClient) GetMetrics() *claudeapi.Metrics {
+func (c *PerplexityClient) GetMetrics() *perplexityapi.Metrics {
 	if c.MessageClient == nil {
 		return nil
 	}
 	return c.MessageClient.GetMetrics()
 }
 
-// ClearConversation clears the conversation history for a portal.
-func (c *ClaudeClient) ClearConversation(portalID networkid.PortalID) {
-	c.convMu.Lock()
-	defer c.convMu.Unlock()
-
-	if cm, ok := c.conversations[portalID]; ok {
-		cm.Clear()
-		c.Connector.Log.Debug().
-			Str("portal_id", string(portalID)).
-			Msg("Cleared conversation history")
+// ClearConversation clears the conversation history for a portal via sidecar.
+func (c *PerplexityClient) ClearConversation(portalID networkid.PortalID) {
+	if msgClient, ok := c.MessageClient.(*sidecar.MessageClient); ok {
+		// Use client context if available, otherwise create a timeout context
+		ctx := c.ctx
+		if ctx == nil || ctx.Err() != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+		}
+		if err := msgClient.ClearSession(ctx, string(portalID)); err != nil {
+			c.Connector.Log.Warn().Err(err).
+				Str("portal_id", string(portalID)).
+				Msg("Failed to clear sidecar session")
+		} else {
+			c.Connector.Log.Debug().
+				Str("portal_id", string(portalID)).
+				Msg("Cleared sidecar session")
+		}
 	}
 }
 
-// GetConversationStats returns stats for a portal's conversation.
-func (c *ClaudeClient) GetConversationStats(portalID networkid.PortalID) (messageCount, estimatedTokens int, lastUsed time.Time) {
-	c.convMu.RLock()
-	defer c.convMu.RUnlock()
-
-	c.Connector.Log.Debug().
-		Str("portal_id", string(portalID)).
-		Int("total_conversations", len(c.conversations)).
-		Msg("Getting conversation stats")
-
-	if cm, ok := c.conversations[portalID]; ok {
-		count := cm.MessageCount()
-		tokens := cm.EstimatedTokens()
-		c.Connector.Log.Debug().
-			Int("message_count", count).
-			Int("estimated_tokens", tokens).
-			Msg("Found conversation")
-		return count, tokens, cm.LastUsedAt()
+// GetConversationStats returns stats for a portal's conversation from sidecar.
+func (c *PerplexityClient) GetConversationStats(portalID networkid.PortalID) (messageCount, estimatedTokens int, lastUsed time.Time) {
+	if msgClient, ok := c.MessageClient.(*sidecar.MessageClient); ok {
+		// Use client context if available, otherwise create a timeout context
+		ctx := c.ctx
+		if ctx == nil || ctx.Err() != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+		}
+		stats, err := msgClient.GetSessionStats(ctx, string(portalID))
+		if err != nil {
+			c.Connector.Log.Debug().Err(err).
+				Str("portal_id", string(portalID)).
+				Msg("Failed to get sidecar session stats")
+			return 0, 0, time.Time{}
+		}
+		if stats != nil {
+			// Convert Unix timestamp to time.Time, and use total tokens as estimate
+			lastUsedTime := time.Unix(int64(stats.LastUsed), 0)
+			estimatedTokens := int(stats.InputTokens + stats.OutputTokens)
+			return stats.MessageCount, estimatedTokens, lastUsedTime
+		}
 	}
-
-	// Log available portal IDs for debugging
-	var ids []string
-	for id := range c.conversations {
-		ids = append(ids, string(id))
-	}
-	c.Connector.Log.Debug().
-		Strs("available_portals", ids).
-		Msg("Conversation not found for portal")
-
 	return 0, 0, time.Time{}
 }
 
-// GetConversationFullStats returns full stats for a portal's conversation including compaction info.
-func (c *ClaudeClient) GetConversationFullStats(portalID networkid.PortalID) (messageCount, estimatedTokens, maxTokens, compactionCount int, isCompacted bool) {
-	c.convMu.RLock()
-	defer c.convMu.RUnlock()
-
-	if cm, ok := c.conversations[portalID]; ok {
-		return cm.MessageCount(), cm.EstimatedTokens(), cm.GetMaxTokens(), cm.CompactionCount(), cm.IsCompacted()
-	}
-
-	return 0, 0, 0, 0, false
+// GetConversationFullStats returns full stats for a portal's conversation.
+// For sidecar mode, this returns basic stats since compaction is handled by sidecar.
+func (c *PerplexityClient) GetConversationFullStats(portalID networkid.PortalID) (messageCount, estimatedTokens, maxTokens, compactionCount int, isCompacted bool) {
+	count, tokens, _ := c.GetConversationStats(portalID)
+	// Sidecar handles compaction internally
+	return count, tokens, 0, 0, false
 }
 
 // ResolveIdentifier resolves an identifier to start a new chat.
-// Supported identifiers: "claude", "opus", "sonnet", "haiku", or full model names.
-func (c *ClaudeClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
+// Supported identifiers: "perplexity", "sonar", "sonar-pro", "sonar-reasoning", "sonar-reasoning-pro", or full model names.
+func (c *PerplexityClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
 	c.Connector.Log.Debug().
 		Str("identifier", identifier).
 		Bool("create_chat", createChat).
@@ -1464,15 +1152,16 @@ func (c *ClaudeClient) ResolveIdentifier(ctx context.Context, identifier string,
 	// Parse identifier to determine the model
 	model := c.parseModelIdentifier(identifier)
 	if model == "" {
-		return nil, fmt.Errorf("unknown identifier: %s (try 'opus', 'sonnet', 'haiku', or a full model name)", identifier)
+		return nil, fmt.Errorf("unknown identifier: %s (try 'sonar', 'sonar-pro', 'sonar-reasoning', 'sonar-reasoning-pro', or a full model name)", identifier)
 	}
 
-	ghostID := c.Connector.MakeClaudeGhostID(model)
+	ghostID := c.Connector.MakePerplexityGhostID(model)
 
 	// Get display name for the model
-	displayName := fmt.Sprintf("Claude (%s)", model)
-	if info := claudeapi.GetModelInfo(model); info != nil && info.DisplayName != "" {
-		displayName = info.DisplayName
+	displayName := fmt.Sprintf("Perplexity (%s)", model)
+	family := perplexityapi.GetModelFamily(model)
+	if family != "" {
+		displayName = fmt.Sprintf("Perplexity %s", strings.Title(strings.ReplaceAll(family, "-", " ")))
 	}
 	isBot := true
 
@@ -1480,15 +1169,15 @@ func (c *ClaudeClient) ResolveIdentifier(ctx context.Context, identifier string,
 	ghostUserInfo := &bridgev2.UserInfo{
 		Name:        &displayName,
 		IsBot:       &isBot,
-		Identifiers: []string{fmt.Sprintf("claude:%s", model)},
+		Identifiers: []string{fmt.Sprintf("perplexity:%s", model)},
 	}
 
 	roomType := database.RoomTypeDM
 	chatName := fmt.Sprintf("Conversation with %s", displayName)
 
 	// Generate a unique conversation ID
-	conversationID := fmt.Sprintf("conv_%s_%d", claudeapi.GetModelFamily(model), time.Now().UnixNano())
-	portalKey := MakeClaudePortalKey(conversationID)
+	conversationID := fmt.Sprintf("conv_%s_%d", perplexityapi.GetModelFamily(model), time.Now().UnixNano())
+	portalKey := MakePerplexityPortalKey(conversationID)
 
 	c.Connector.Log.Info().
 		Str("identifier", identifier).
@@ -1515,7 +1204,7 @@ func (c *ClaudeClient) ResolveIdentifier(ctx context.Context, identifier string,
 							},
 						},
 						{
-							// The Claude ghost - include UserInfo for proper setup
+							// The Perplexity ghost - include UserInfo for proper setup
 							EventSender: bridgev2.EventSender{
 								IsFromMe: false,
 								Sender:   ghostID,
@@ -1554,35 +1243,38 @@ func (c *ClaudeClient) ResolveIdentifier(ctx context.Context, identifier string,
 
 // parseModelIdentifier parses an identifier and returns the full model name.
 // This uses friendly aliases that map to actual model IDs.
-func (c *ClaudeClient) parseModelIdentifier(identifier string) string {
+func (c *PerplexityClient) parseModelIdentifier(identifier string) string {
 	identifier = strings.ToLower(strings.TrimSpace(identifier))
 
-	// Map friendly names to default model aliases
-	// These will be validated against the API when used
+	// Map friendly names to model names
 	switch identifier {
-	case "claude", "sonnet", "claude-sonnet":
-		return c.Connector.Config.GetDefaultModel()
-	case "opus", "claude-opus":
-		return "claude-opus-4-5-20251101"
-	case "haiku", "claude-haiku":
-		return "claude-haiku-4-5-20251001"
+	case "perplexity", "sonar":
+		return perplexityapi.ModelSonar
+	case "sonar-pro", "pro":
+		return perplexityapi.ModelSonarPro
+	case "sonar-reasoning", "reasoning":
+		return perplexityapi.ModelSonarReasoning
+	case "sonar-reasoning-pro", "reasoning-pro":
+		return perplexityapi.ModelSonarReasoningPro
 	}
 
-	// Check if it's a model family name (e.g., "claude_opus" ghost ID format)
-	if strings.HasPrefix(identifier, "claude_") {
-		family := strings.TrimPrefix(identifier, "claude_")
+	// Check if it's a model family name (e.g., "perplexity_sonar" ghost ID format)
+	if strings.HasPrefix(identifier, "perplexity_") {
+		family := strings.TrimPrefix(identifier, "perplexity_")
 		switch family {
-		case "opus":
-			return "claude-opus-4-5-20251101"
-		case "sonnet":
-			return c.Connector.Config.GetDefaultModel()
-		case "haiku":
-			return "claude-haiku-4-5-20251001"
+		case "sonar":
+			return perplexityapi.ModelSonar
+		case "sonar-pro":
+			return perplexityapi.ModelSonarPro
+		case "sonar-reasoning":
+			return perplexityapi.ModelSonarReasoning
+		case "sonar-reasoning-pro":
+			return perplexityapi.ModelSonarReasoningPro
 		}
 	}
 
-	// Assume it's a direct model ID - let the API validate it
-	if strings.Contains(identifier, "claude") {
+	// Check if it's a valid Perplexity model
+	if perplexityapi.IsValidModel(identifier) {
 		return identifier
 	}
 

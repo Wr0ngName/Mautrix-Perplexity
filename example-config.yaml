@@ -1,4 +1,4 @@
-# mautrix-claude configuration
+# mautrix-perplexity configuration
 #
 # IMPORTANT: The bridge bot needs power level 50+ in management rooms to redact
 # sensitive commands (like login). Either:
@@ -28,10 +28,10 @@ homeserver:
 # Changing these values requires regeneration of the registration.
 appservice:
     # The address that the homeserver can use to connect to this appservice.
-    address: http://localhost:29350
+    address: http://localhost:29321
     # The hostname and port where this appservice should listen.
     hostname: 0.0.0.0
-    port: 29350
+    port: 29321
     # The maximum body size of appservice API requests (from the homeserver) in mebibytes
     # Usually 1 is enough, but on high-traffic bridges you might need to increase this to avoid 413s
     max_body_size: 1
@@ -39,7 +39,7 @@ appservice:
     # Format examples:
     #   SQLite:   sqlite:filename.db
     #   Postgres: postgres://user:password@host/database?sslmode=disable
-    database: sqlite:mautrix-claude.db
+    database: sqlite:mautrix-perplexity.db
     # Additional arguments for asyncpg.create_pool() or sqlite3.connect()
     # https://magicstack.github.io/asyncpg/current/api/index.html#asyncpg.pool.create_pool
     # https://docs.python.org/3/library/sqlite3.html#sqlite3.connect
@@ -48,13 +48,13 @@ appservice:
         min_size: 1
         max_size: 10
     # The unique ID of this appservice.
-    id: claude
+    id: perplexity
     # Username of the appservice bot.
-    bot_username: claudebot
+    bot_username: perplexitybot
     # Display name and avatar for bot. Set to "remove" to remove display name/avatar, leave empty
     # to leave display name/avatar as-is.
-    bot_displayname: Claude AI bridge bot
-    bot_avatar: mxc://maunium.net/claude
+    bot_displayname: Perplexity AI bridge bot
+    bot_avatar: mxc://maunium.net/perplexity
     # Whether or not to receive ephemeral events via appservice transactions.
     # Requires MSC2409 support (i.e. Synapse 1.22+).
     ephemeral_events: true
@@ -67,35 +67,35 @@ appservice:
 
 # Bridge config
 bridge:
-    # Localpart template of MXIDs for Claude users.
-    # {{.}} is replaced with the Claude model family (e.g., opus, sonnet).
-    username_template: claude_{{.}}
-    # Displayname template for Claude users.
+    # Localpart template of MXIDs for Perplexity users.
+    # {{.}} is replaced with the Perplexity model family (e.g., sonar, sonar-pro).
+    username_template: perplexity_{{.}}
+    # Displayname template for Perplexity users.
     # {{.ProfileName}} is replaced with the model name.
-    displayname_template: "{{.ProfileName}} (Claude AI)"
+    displayname_template: "{{.ProfileName}} (Perplexity AI)"
     # Whether to explicitly set the avatar and room name for private chat portal rooms.
     private_chat_portal_meta: true
     # Whether or not the bridge should send a read receipt after successfully bridging a message.
     delivery_receipts: false
     # Whether or not created Matrix rooms should have federation enabled.
     federate_rooms: true
-    # Settings for backfilling messages (not applicable for Claude).
+    # Settings for backfilling messages (not applicable for Perplexity).
     backfill:
         enabled: false
         max_initial_messages: 0
     # The prefix for commands. Only required in non-management rooms.
-    command_prefix: "!claude"
+    command_prefix: "!perplexity"
     # Messages sent upon joining a management room.
     # Markdown is supported. The defaults are listed below.
     management_room_text:
         # Sent when joining a room.
-        welcome: "Hello, I'm a Claude AI bridge bot."
+        welcome: "Hello, I'm a Perplexity AI bridge bot."
         # Sent when joining a management room and the user is already logged in.
         welcome_connected: "Use `help` for help."
         # Sent when joining a management room and the user is not logged in.
         welcome_unconnected: "Use `help` for help or `login` to log in."
         # Optional extra text sent when joining a management room.
-        additional_help: "Supported login methods: API key (console.anthropic.com) or session cookie (claude.ai Pro/Ultra)."
+        additional_help: "Login with your Perplexity API key from perplexity.ai/settings/api"
     # End-to-bridge encryption support options.
     encryption:
         # Allow encryption, work in group chat rooms with e2ee enabled
@@ -162,19 +162,17 @@ bridge:
         "example.com": user
         "@admin:example.com": admin
 
-# Network (Claude) connector specific options
+# Network (Perplexity) connector specific options
 network:
-    # Default Claude model to use
-    # Use family names to automatically use the latest version:
-    #   sonnet, opus, haiku
-    # Or specify a full model ID for a specific version
+    # Default Perplexity model to use
+    # Available models: sonar, sonar-pro, sonar-reasoning, sonar-reasoning-pro
     # Run the "models" command after login to see all available models
-    default_model: sonnet
+    default_model: sonar
 
-    # Maximum tokens for responses (1-16384 depending on model)
+    # Maximum tokens for responses (depends on model)
     max_tokens: 4096
 
-    # Temperature controls randomness (0.0-1.0, default 1.0)
+    # Temperature controls randomness (0.0-2.0, default 1.0)
     # Lower = more focused and deterministic
     # Higher = more creative and varied
     temperature: 1.0
@@ -189,18 +187,20 @@ network:
     # Rate limiting (requests per minute, 0 = unlimited)
     rate_limit_per_minute: 60
 
-    # Sidecar mode for Pro/Max subscription support
-    # When enabled, uses the Claude Agent SDK sidecar instead of direct API
-    # This allows using Pro/Max subscriptions instead of API credits
+    # Sidecar configuration (mandatory for Perplexity bridge)
+    # The sidecar uses the official Perplexity Python SDK
     sidecar:
-        enabled: false
+        # URL of the sidecar service (default: http://localhost:8090)
+        url: "http://localhost:8090"
+        # Request timeout in seconds (default: 300)
+        timeout: 300
 
 # Logging config
 logging:
     # The directory for log files.
     directory: ./logs
     # Log file name format. Supported variables:
-    #   {{.Name}} - bridge name (e.g. mautrix-candy)
+    #   {{.Name}} - bridge name (e.g. mautrix-perplexity)
     #   {{.Date}} - date in YYYY-MM-DD format
     file_name_format: "{{.Date}}-{{.Name}}.log"
     # Log file mode (chmod)
