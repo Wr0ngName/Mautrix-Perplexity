@@ -1089,6 +1089,16 @@ func (c *PerplexityClient) GetMetrics() *perplexityapi.Metrics {
 	return c.MessageClient.GetMetrics()
 }
 
+// makeSessionKey generates the session key for sidecar session management.
+// In multi-user relay mode, sessions are keyed by "portal_id:user_id" for isolation.
+// This must match the Python sidecar's get_session_key() logic.
+func (c *PerplexityClient) makeSessionKey(portalID networkid.PortalID) string {
+	if c.UserLogin != nil && c.UserLogin.UserMXID != "" {
+		return fmt.Sprintf("%s:%s", string(portalID), string(c.UserLogin.UserMXID))
+	}
+	return string(portalID)
+}
+
 // ClearConversation clears the conversation history for a portal via sidecar.
 func (c *PerplexityClient) ClearConversation(portalID networkid.PortalID) {
 	if msgClient, ok := c.MessageClient.(*sidecar.MessageClient); ok {
@@ -1099,13 +1109,15 @@ func (c *PerplexityClient) ClearConversation(portalID networkid.PortalID) {
 			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 		}
-		if err := msgClient.ClearSession(ctx, string(portalID)); err != nil {
+		// Use composite session key for multi-user isolation
+		sessionKey := c.makeSessionKey(portalID)
+		if err := msgClient.ClearSession(ctx, sessionKey); err != nil {
 			c.Connector.Log.Warn().Err(err).
-				Str("portal_id", string(portalID)).
+				Str("session_key", sessionKey).
 				Msg("Failed to clear sidecar session")
 		} else {
 			c.Connector.Log.Debug().
-				Str("portal_id", string(portalID)).
+				Str("session_key", sessionKey).
 				Msg("Cleared sidecar session")
 		}
 	}
@@ -1121,10 +1133,12 @@ func (c *PerplexityClient) GetConversationStats(portalID networkid.PortalID) (me
 			ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 		}
-		stats, err := msgClient.GetSessionStats(ctx, string(portalID))
+		// Use composite session key for multi-user isolation
+		sessionKey := c.makeSessionKey(portalID)
+		stats, err := msgClient.GetSessionStats(ctx, sessionKey)
 		if err != nil {
 			c.Connector.Log.Debug().Err(err).
-				Str("portal_id", string(portalID)).
+				Str("session_key", sessionKey).
 				Msg("Failed to get sidecar session stats")
 			return 0, 0, time.Time{}
 		}
