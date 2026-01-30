@@ -241,6 +241,7 @@ type PortalMetadata struct {
 	Temperature            *float64 `json:"temperature,omitempty"`            // Custom temperature
 	MentionOnly            bool     `json:"mention_only,omitempty"`           // Only respond when mentioned
 	ConversationMode       bool     `json:"conversation_mode,omitempty"`      // Enable multi-turn conversation history (default: off)
+	SidecarSessionID       string   `json:"sidecar_session_id,omitempty"`     // Session ID for resume after restart
 	WebSearchDomains       []string `json:"web_search_domains,omitempty"`     // Domain filter for web search (include only these)
 	WebSearchRecency       string   `json:"web_search_recency,omitempty"`     // Recency filter: day, week, month, year
 	WebSearchAfterDate     string   `json:"web_search_after_date,omitempty"`  // Search after date (MM/DD/YYYY)

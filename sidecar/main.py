@@ -145,6 +145,7 @@ class ChatRequest(BaseModel):
     content: Optional[list[ContentBlock]] = None  # Structured content (for images)
     system_prompt: Optional[str] = None
     model: Optional[str] = None
+    session_id: Optional[str] = None  # Session ID from bridge DB for resume after restart
     stream: bool = False
     web_search_options: Optional[WebSearchOptions] = None
     max_tokens: Optional[int] = None
@@ -275,21 +276,33 @@ class SessionManager:
                 logger.info(f"Cleaned up expired session: {session_key}")
             ACTIVE_SESSIONS.set(len(self.sessions))
 
-    async def get_or_create(self, session_key: str) -> Session:
+    async def get_or_create(
+        self, session_key: str, provided_session_id: Optional[str] = None
+    ) -> Session:
         """Get existing session or create new one.
 
         Args:
             session_key: Composite key in format "portal_id:user_id" or just "portal_id"
+            provided_session_id: Optional session_id from bridge DB for resume after restart
         """
         import uuid
         async with self._lock:
             if session_key not in self.sessions:
+                # Use provided session_id if available (for resume after restart)
+                session_id = provided_session_id if provided_session_id else str(uuid.uuid4())
                 session = Session(
-                    session_id=str(uuid.uuid4()),
+                    session_id=session_id,
                     session_key=session_key
                 )
                 self.sessions[session_key] = session
-                logger.info(f"Created new session {session.session_id} for key {session_key}")
+                if provided_session_id:
+                    logger.info(
+                        f"Resumed session {session.session_id} for key {session_key}"
+                    )
+                else:
+                    logger.info(
+                        f"Created new session {session.session_id} for key {session_key}"
+                    )
                 ACTIVE_SESSIONS.set(len(self.sessions))
 
             session = self.sessions[session_key]
@@ -661,8 +674,11 @@ async def chat(request: ChatRequest):
     request.validate_input()
 
     # Get or create session using composite key for multi-user isolation
+    # Pass session_id from request for resume after restart
     session_key = request.get_session_key()
-    session = await session_manager.get_or_create(session_key)
+    session = await session_manager.get_or_create(
+        session_key, provided_session_id=request.session_id
+    )
 
     try:
         # Build user content for history (only used if conversation_mode enabled)
@@ -753,8 +769,11 @@ async def chat_stream(request: ChatRequest):
     request.validate_input()
 
     # Get or create session using composite key for multi-user isolation
+    # Pass session_id from request for resume after restart
     session_key = request.get_session_key()
-    session = await session_manager.get_or_create(session_key)
+    session = await session_manager.get_or_create(
+        session_key, provided_session_id=request.session_id
+    )
 
     # Build user content for history (only used if conversation_mode enabled)
     user_content = build_user_content(request)

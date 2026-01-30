@@ -88,6 +88,7 @@ type ChatRequest struct {
 	Content          []ContentBlock    `json:"content,omitempty"`            // Structured content with images
 	SystemPrompt     *string           `json:"system_prompt,omitempty"`
 	Model            *string           `json:"model,omitempty"`
+	SessionID        string            `json:"session_id,omitempty"`         // Session ID for resume after restart
 	Stream           bool              `json:"stream"`
 	WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
 	MaxTokens        *int              `json:"max_tokens,omitempty"`
@@ -289,11 +290,11 @@ func (c *Client) TestAuth(ctx context.Context, userID, apiKey string) (*TestAuth
 
 // Chat sends a message to Perplexity and returns the response.
 func (c *Client) Chat(ctx context.Context, portalID, userID, apiKey, message string, systemPrompt, model *string) (*ChatResponse, error) {
-	return c.ChatWithContent(ctx, portalID, userID, apiKey, message, nil, systemPrompt, model, nil, false)
+	return c.ChatWithContent(ctx, portalID, userID, apiKey, message, nil, systemPrompt, model, nil, false, "")
 }
 
 // ChatWithContent sends a message to Perplexity with optional structured content (for images).
-func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, message string, content []ContentBlock, systemPrompt, model *string, webSearchOptions *WebSearchOptions, conversationMode bool) (*ChatResponse, error) {
+func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, message string, content []ContentBlock, systemPrompt, model *string, webSearchOptions *WebSearchOptions, conversationMode bool, sessionID string) (*ChatResponse, error) {
 	// Validate required fields early to avoid unnecessary network calls
 	if apiKey == "" {
 		return nil, fmt.Errorf("API key is required")
@@ -317,6 +318,7 @@ func (c *Client) ChatWithContent(ctx context.Context, portalID, userID, apiKey, 
 		Content:          content,
 		SystemPrompt:     systemPrompt,
 		Model:            model,
+		SessionID:        sessionID,
 		Stream:           false,
 		WebSearchOptions: webSearchOptions,
 		ConversationMode: conversationMode,

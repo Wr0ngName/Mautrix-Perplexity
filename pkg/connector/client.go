@@ -38,14 +38,25 @@ func isImageSupported(mimeType string) bool {
 }
 
 // getMessageText extracts the message text from a Matrix message content.
-// If FormattedBody (HTML) is available, it parses it to preserve mention display names.
-// Otherwise, it falls back to the plain Body (which contains raw Matrix user IDs).
+// Uses plain Body to avoid HTML formatting artifacts.
 func getMessageText(content *event.MessageEventContent) string {
-	// If we have formatted HTML body, parse it to get display names for mentions
-	if content.FormattedBody != "" && content.Format == event.FormatHTML {
-		return format.HTMLToText(content.FormattedBody)
-	}
 	return content.Body
+}
+
+// stripRelaySenderPrefix removes the "displayname: " prefix that the bridge relay adds.
+// The relay format is "displayname: message" where displayname doesn't contain ": ".
+func stripRelaySenderPrefix(text string) string {
+	// Find the first ": " which separates sender from message in relay format
+	idx := strings.Index(text, ": ")
+	if idx == -1 || idx == 0 {
+		return text
+	}
+	// Only strip if the prefix looks like a display name (no newlines, reasonable length)
+	prefix := text[:idx]
+	if len(prefix) > 100 || strings.ContainsAny(prefix, "\n\r") {
+		return text
+	}
+	return text[idx+2:]
 }
 
 // downloadAndEncodeImage downloads an image from Matrix and converts it to base64.
@@ -412,6 +423,7 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		Str("msg_type", string(msg.Content.MsgType)).
 		Str("body", bodyPreview).
 		Bool("mention_only", meta.MentionOnly).
+		Bool("conversation_mode", meta.ConversationMode).
 		Msg("Handling Matrix message")
 
 	// Check mention-only mode
@@ -455,16 +467,9 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		return nil, fmt.Errorf("%s", errMsg)
 	}
 
-	// Get sender display name for multi-user awareness (only used in conversation mode)
-	var senderName string
-	if meta.ConversationMode {
-		senderName = msg.Event.Sender.String() // Fallback to MXID
-		if memberInfo, err := c.Connector.br.Matrix.GetMemberInfo(ctx, msg.Portal.MXID, msg.Event.Sender); err == nil && memberInfo != nil && memberInfo.Displayname != "" {
-			senderName = memberInfo.Displayname
-		}
-	}
-
 	// Build content array based on message type
+	// Note: In relay mode, bridge prepends "displayname: " to messages.
+	// We keep it for conversation mode (multi-user context), strip it otherwise.
 	userMsgID := string(msg.Event.ID)
 	var messageContent []perplexityapi.Content
 
@@ -481,31 +486,21 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 		messageContent = append(messageContent, *imageContent)
 
-		// Add caption/body text if present (with sender name only in conversation mode)
+		// Add caption/body text if present
 		if msg.Content.Body != "" && msg.Content.Body != msg.Content.FileName {
-			// Use getMessageText to preserve display names in mentions
 			captionText := getMessageText(msg.Content)
-			var textContent string
-			if senderName != "" {
-				textContent = fmt.Sprintf("[%s]: %s", senderName, captionText)
-			} else {
-				textContent = captionText
+			if !meta.ConversationMode {
+				captionText = stripRelaySenderPrefix(captionText)
 			}
 			messageContent = append(messageContent, perplexityapi.Content{
 				Type: "text",
-				Text: textContent,
+				Text: captionText,
 			})
 		} else {
-			// Add a default prompt for image analysis (with sender name only in conversation mode)
-			var textContent string
-			if senderName != "" {
-				textContent = fmt.Sprintf("[%s]: What's in this image?", senderName)
-			} else {
-				textContent = "What's in this image?"
-			}
+			// Add a default prompt for image analysis
 			messageContent = append(messageContent, perplexityapi.Content{
 				Type: "text",
-				Text: textContent,
+				Text: "What's in this image?",
 			})
 		}
 
@@ -518,22 +513,19 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		if msg.Content.Body == "" {
 			return nil, fmt.Errorf("empty message body")
 		}
-		// Use getMessageText to preserve display names in mentions
 		messageText := getMessageText(msg.Content)
+		// Strip relay sender prefix when not in conversation mode
+		if !meta.ConversationMode {
+			messageText = stripRelaySenderPrefix(messageText)
+		}
+
 		// Validate message length to prevent abuse
 		if err := ValidateMessageLength(messageText); err != nil {
 			return nil, err
 		}
-		// Prepend sender name only in conversation mode so Perplexity knows who's talking
-		var textContent string
-		if senderName != "" {
-			textContent = fmt.Sprintf("[%s]: %s", senderName, messageText)
-		} else {
-			textContent = messageText
-		}
 		messageContent = append(messageContent, perplexityapi.Content{
 			Type: "text",
-			Text: textContent,
+			Text: messageText,
 		})
 	}
 
@@ -577,6 +569,14 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	// Add conversation mode from portal metadata (default: false = no history)
 	if meta.ConversationMode {
 		ctx = sidecar.WithConversationMode(ctx, true)
+	}
+
+	// Add session ID for resume (persisted in bridge DB)
+	if meta.SidecarSessionID != "" {
+		ctx = sidecar.WithSessionID(ctx, meta.SidecarSessionID)
+		c.Connector.Log.Debug().
+			Str("session_id", meta.SidecarSessionID).
+			Msg("Resuming sidecar session from bridge DB")
 	}
 
 	// Add web search options from portal metadata if configured
@@ -662,6 +662,7 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	var streamError error
 	var citations []perplexityapi.SearchResult
 	var images []perplexityapi.ImageResult
+	var newSessionID string // Track session_id for persistence
 
 	for event := range stream {
 		switch event.Type {
@@ -679,6 +680,10 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		case "message_delta":
 			if event.Usage != nil {
 				outputTokens = event.Usage.OutputTokens
+			}
+			// Capture session_id from message_delta event for persistence
+			if event.SessionID != "" {
+				newSessionID = event.SessionID
 			}
 		case "citations":
 			// Collect citations from Perplexity search results
@@ -720,6 +725,21 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 
 	// Stop typing indicator now that streaming is complete
 	stopTyping()
+
+	// Store sidecar session ID for resume (persisted in bridge DB)
+	if newSessionID != "" && newSessionID != meta.SidecarSessionID {
+		meta.SidecarSessionID = newSessionID
+		msg.Portal.Metadata = meta
+		if err := msg.Portal.Save(ctx); err != nil {
+			c.Connector.Log.Warn().Err(err).
+				Str("session_id", newSessionID).
+				Msg("Failed to save sidecar session ID to portal metadata")
+		} else {
+			c.Connector.Log.Debug().
+				Str("session_id", newSessionID).
+				Msg("Saved sidecar session ID to bridge DB for resume")
+		}
+	}
 
 	// Check if context timed out
 	if streamCtx.Err() == context.DeadlineExceeded {
@@ -1239,14 +1259,16 @@ func (c *PerplexityClient) makeSessionKey(portalID networkid.PortalID) string {
 
 // ClearConversation clears the conversation history for a portal via sidecar.
 func (c *PerplexityClient) ClearConversation(portalID networkid.PortalID) {
+	// Use client context if available, otherwise create a timeout context
+	ctx := c.ctx
+	if ctx == nil || ctx.Err() != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+	}
+
+	// Clear sidecar session
 	if msgClient, ok := c.MessageClient.(*sidecar.MessageClient); ok {
-		// Use client context if available, otherwise create a timeout context
-		ctx := c.ctx
-		if ctx == nil || ctx.Err() != nil {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-		}
 		// Use composite session key for multi-user isolation
 		sessionKey := c.makeSessionKey(portalID)
 		if err := msgClient.ClearSession(ctx, sessionKey); err != nil {
@@ -1257,6 +1279,30 @@ func (c *PerplexityClient) ClearConversation(portalID networkid.PortalID) {
 			c.Connector.Log.Debug().
 				Str("session_key", sessionKey).
 				Msg("Cleared sidecar session")
+		}
+	}
+
+	// Also clear session ID from portal metadata (bridge DB)
+	portal, err := c.Connector.br.GetExistingPortalByKey(ctx, MakePerplexityPortalKey(string(portalID)))
+	if err != nil {
+		c.Connector.Log.Warn().Err(err).
+			Str("portal_id", string(portalID)).
+			Msg("Failed to get portal for session ID clear")
+		return
+	}
+	if portal != nil {
+		if meta, ok := portal.Metadata.(*PortalMetadata); ok && meta.SidecarSessionID != "" {
+			oldSessionID := meta.SidecarSessionID
+			meta.SidecarSessionID = ""
+			portal.Metadata = meta
+			if err := portal.Save(ctx); err != nil {
+				c.Connector.Log.Warn().Err(err).
+					Msg("Failed to clear session ID from portal metadata")
+			} else {
+				c.Connector.Log.Debug().
+					Str("old_session_id", oldSessionID).
+					Msg("Cleared session ID from portal metadata")
+			}
 		}
 	}
 }

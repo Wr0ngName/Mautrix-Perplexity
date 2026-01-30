@@ -80,6 +80,12 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *perplexity
 			conversationMode = cm
 		}
 
+		// Extract session ID for resume (stored in bridge DB)
+		var sessionID string
+		if sid, ok := ctx.Value(sessionIDKey).(string); ok {
+			sessionID = sid
+		}
+
 		// Extract message content (text and images) from request
 		messageText, messageContent := extractMessageContent(req.Messages)
 		if messageText == "" && len(messageContent) == 0 {
@@ -128,7 +134,7 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *perplexity
 			model = &req.Model
 		}
 
-		resp, err := m.client.ChatWithContent(ctx, portalID, userID, apiKey, messageText, messageContent, systemPrompt, model, webSearchOptions, conversationMode)
+		resp, err := m.client.ChatWithContent(ctx, portalID, userID, apiKey, messageText, messageContent, systemPrompt, model, webSearchOptions, conversationMode, sessionID)
 		if err != nil {
 			m.metrics.FailedRequests.Add(1)
 			if ctx.Err() != nil {
@@ -268,6 +274,12 @@ func (m *MessageClient) CreateMessage(ctx context.Context, req *perplexityapi.Cr
 		conversationMode = cm
 	}
 
+	// Extract session ID for resume (stored in bridge DB)
+	var sessionID string
+	if sid, ok := ctx.Value(sessionIDKey).(string); ok {
+		sessionID = sid
+	}
+
 	// Extract message content (text and images)
 	messageText, messageContent := extractMessageContent(req.Messages)
 	if messageText == "" && len(messageContent) == 0 {
@@ -285,7 +297,7 @@ func (m *MessageClient) CreateMessage(ctx context.Context, req *perplexityapi.Cr
 		model = &req.Model
 	}
 
-	resp, err := m.client.ChatWithContent(ctx, portalID, userID, apiKey, messageText, messageContent, systemPrompt, model, webSearchOptions, conversationMode)
+	resp, err := m.client.ChatWithContent(ctx, portalID, userID, apiKey, messageText, messageContent, systemPrompt, model, webSearchOptions, conversationMode, sessionID)
 	if err != nil {
 		m.metrics.FailedRequests.Add(1)
 		return nil, err
@@ -381,6 +393,7 @@ const (
 	apiKeyContextKey     contextKey = "api_key"
 	webSearchOptionsKey  contextKey = "web_search_options"
 	conversationModeKey  contextKey = "conversation_mode"
+	sessionIDKey         contextKey = "session_id"
 )
 
 // WithPortalID returns a context with the portal ID set.
@@ -403,6 +416,11 @@ func WithWebSearchOptions(ctx context.Context, options *WebSearchOptions) contex
 // WithConversationMode returns a context with conversation mode enabled/disabled.
 func WithConversationMode(ctx context.Context, enabled bool) context.Context {
 	return context.WithValue(ctx, conversationModeKey, enabled)
+}
+
+// WithSessionID returns a context with session ID set for resume after restart.
+func WithSessionID(ctx context.Context, sessionID string) context.Context {
+	return context.WithValue(ctx, sessionIDKey, sessionID)
 }
 
 // extractMessageContent extracts text and structured content from the last user message.
