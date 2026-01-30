@@ -665,31 +665,7 @@ func TestEstimateTokens(t *testing.T) {
 	}
 }
 
-func TestWithPortalID(t *testing.T) {
-	ctx := context.Background()
-
-	// Without portal ID
-	if val := ctx.Value(portalIDKey); val != nil {
-		t.Error("Expected nil portal ID in base context")
-	}
-
-	// With portal ID
-	ctx = WithPortalID(ctx, "test-portal-123")
-	val := ctx.Value(portalIDKey)
-
-	if val == nil {
-		t.Error("Expected non-nil portal ID")
-	}
-
-	portalID, ok := val.(string)
-	if !ok {
-		t.Error("Portal ID should be string type")
-	}
-
-	if portalID != "test-portal-123" {
-		t.Errorf("Expected portal ID 'test-portal-123', got '%s'", portalID)
-	}
-}
+// TestWithPortalID is in context_test.go with more comprehensive tests
 
 func TestMessageClientImplementsInterface(t *testing.T) {
 	// Compile-time check that MessageClient implements perplexityapi.MessageClient
