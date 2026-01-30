@@ -36,6 +36,20 @@ func (c *PerplexityConnector) GetOrUpdateGhost(ctx context.Context, ghostID netw
 		}
 	}
 
+	// Update the ghost's display name on Matrix
+	family := perplexityapi.GetModelFamily(model)
+	displayName := fmt.Sprintf("Perplexity (%s)", model)
+	if family != "" {
+		displayName = fmt.Sprintf("Perplexity %s", strings.Title(strings.ReplaceAll(family, "-", " ")))
+	}
+	isBot := true
+	userInfo := &bridgev2.UserInfo{
+		Name:        &displayName,
+		IsBot:       &isBot,
+		Identifiers: []string{fmt.Sprintf("perplexity:%s", model)},
+	}
+	ghost.UpdateInfo(ctx, userInfo)
+
 	return ghost, nil
 }
 
