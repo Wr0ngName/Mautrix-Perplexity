@@ -3,16 +3,13 @@ package connector
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-
-	"go.mau.fi/mautrix-perplexity/pkg/perplexityapi"
 )
 
-// GetOrUpdateGhost gets a ghost by ID and ensures its metadata is properly populated.
-// This fixes the issue where ghosts are created with empty Model metadata.
+// GetOrUpdateGhost gets a ghost by ID and ensures its metadata and Matrix profile are properly populated.
+// This fixes the issue where ghosts are created with empty Model metadata and no display name.
 func (c *PerplexityConnector) GetOrUpdateGhost(ctx context.Context, ghostID networkid.UserID, model string) (*bridgev2.Ghost, error) {
 	ghost, err := c.br.GetGhostByID(ctx, ghostID)
 	if err != nil {
@@ -26,29 +23,40 @@ func (c *PerplexityConnector) GetOrUpdateGhost(ctx context.Context, ghostID netw
 		ghost.Metadata = meta
 	}
 
+	// Track if we need to update
+	needsUpdate := false
+
 	// Set model if not already set
 	if meta.Model == "" && model != "" {
 		meta.Model = model
-		// Save to database using the bridge's DB accessor
-		if err := ghost.Bridge.DB.Ghost.Update(ctx, ghost.Ghost); err != nil {
-			c.Log.Warn().Err(err).Str("ghost_id", string(ghostID)).Msg("Failed to save ghost metadata")
-			// Non-fatal - continue with in-memory value
-		}
+		needsUpdate = true
 	}
 
-	// Update the ghost's display name on Matrix
-	family := perplexityapi.GetModelFamily(model)
-	displayName := fmt.Sprintf("Perplexity (%s)", model)
-	if family != "" {
-		displayName = fmt.Sprintf("Perplexity %s", strings.Title(strings.ReplaceAll(family, "-", " ")))
+	// Update Matrix profile if name is not set or metadata changed
+	if ghost.Name == "" || needsUpdate {
+		modelName := meta.Model
+		if modelName == "" {
+			modelName = string(ghost.ID)
+			if modelName == "" {
+				modelName = c.Config.GetDefaultModel()
+			}
+		}
+
+		displayName := fmt.Sprintf("Perplexity (%s)", modelName)
+
+		isBot := true
+		userInfo := &bridgev2.UserInfo{
+			Name:        &displayName,
+			IsBot:       &isBot,
+			Identifiers: []string{fmt.Sprintf("perplexity:%s", modelName)},
+		}
+
+		ghost.UpdateInfo(ctx, userInfo)
+		c.Log.Debug().
+			Str("ghost_id", string(ghostID)).
+			Str("display_name", displayName).
+			Msg("Updated ghost display name")
 	}
-	isBot := true
-	userInfo := &bridgev2.UserInfo{
-		Name:        &displayName,
-		IsBot:       &isBot,
-		Identifiers: []string{fmt.Sprintf("perplexity:%s", model)},
-	}
-	ghost.UpdateInfo(ctx, userInfo)
 
 	return ghost, nil
 }
@@ -69,12 +77,7 @@ func (c *PerplexityClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghos
 		}
 	}
 
-	// Create display name from model
 	displayName := fmt.Sprintf("Perplexity (%s)", modelName)
-	family := perplexityapi.GetModelFamily(modelName)
-	if family != "" {
-		displayName = fmt.Sprintf("Perplexity %s", strings.Title(strings.ReplaceAll(family, "-", " ")))
-	}
 
 	isBot := true
 
