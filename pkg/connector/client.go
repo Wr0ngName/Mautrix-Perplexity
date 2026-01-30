@@ -676,6 +676,18 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 					Int("image_count", len(event.Images)).
 					Msg("Received images from Perplexity")
 			}
+		case "usage":
+			// Capture token usage from sidecar
+			if event.InputTokens > 0 {
+				inputTokens = event.InputTokens
+			}
+			if event.OutputTokens > 0 {
+				outputTokens = event.OutputTokens
+			}
+			c.Connector.Log.Debug().
+				Int("input_tokens", inputTokens).
+				Int("output_tokens", outputTokens).
+				Msg("Received usage info from Perplexity")
 		case "error":
 			c.Connector.Log.Error().Interface("event", event).Msg("Error in stream")
 			if event.Error != nil {

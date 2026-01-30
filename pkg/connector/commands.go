@@ -803,6 +803,17 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 			return
 		}
 
+		// Check for conflict with date filters (mutual exclusion)
+		var clearedFilters []string
+		if meta.WebSearchAfterDate != "" {
+			clearedFilters = append(clearedFilters, fmt.Sprintf("after-date (%s)", meta.WebSearchAfterDate))
+			meta.WebSearchAfterDate = ""
+		}
+		if meta.WebSearchBeforeDate != "" {
+			clearedFilters = append(clearedFilters, fmt.Sprintf("before-date (%s)", meta.WebSearchBeforeDate))
+			meta.WebSearchBeforeDate = ""
+		}
+
 		oldRecency := meta.WebSearchRecency
 		meta.WebSearchRecency = arg
 		if err := ce.Portal.Save(ce.Ctx); err != nil {
@@ -810,7 +821,12 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 			ce.Reply("Failed to save setting: %v", err)
 			return
 		}
-		ce.Reply("Recency filter set to: **%s**\n\nPerplexity will prioritize results from the last %s.", arg, arg)
+
+		reply := fmt.Sprintf("Recency filter set to: **%s**\n\nPerplexity will prioritize results from the last %s.", arg, arg)
+		if len(clearedFilters) > 0 {
+			reply += fmt.Sprintf("\n\n⚠️ **Cleared conflicting filters:** %s (cannot combine recency with date filters)", strings.Join(clearedFilters, ", "))
+		}
+		ce.Reply(reply)
 
 	case "after", "from", "since":
 		if len(ce.Args) < 2 {
@@ -835,6 +851,13 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 			return
 		}
 
+		// Check for conflict with recency filter (mutual exclusion)
+		var clearedRecency string
+		if meta.WebSearchRecency != "" {
+			clearedRecency = meta.WebSearchRecency
+			meta.WebSearchRecency = ""
+		}
+
 		oldDate := meta.WebSearchAfterDate
 		meta.WebSearchAfterDate = arg
 		if err := ce.Portal.Save(ce.Ctx); err != nil {
@@ -842,7 +865,12 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 			ce.Reply("Failed to save setting: %v", err)
 			return
 		}
-		ce.Reply("After-date filter set to: **%s**\n\nPerplexity will search content after this date.", arg)
+
+		reply := fmt.Sprintf("After-date filter set to: **%s**\n\nPerplexity will search content after this date.", arg)
+		if clearedRecency != "" {
+			reply += fmt.Sprintf("\n\n⚠️ **Cleared conflicting filter:** recency (%s) (cannot combine date filters with recency)", clearedRecency)
+		}
+		ce.Reply(reply)
 
 	case "before", "until", "to":
 		if len(ce.Args) < 2 {
@@ -867,6 +895,13 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 			return
 		}
 
+		// Check for conflict with recency filter (mutual exclusion)
+		var clearedRecency string
+		if meta.WebSearchRecency != "" {
+			clearedRecency = meta.WebSearchRecency
+			meta.WebSearchRecency = ""
+		}
+
 		oldDate := meta.WebSearchBeforeDate
 		meta.WebSearchBeforeDate = arg
 		if err := ce.Portal.Save(ce.Ctx); err != nil {
@@ -874,7 +909,12 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 			ce.Reply("Failed to save setting: %v", err)
 			return
 		}
-		ce.Reply("Before-date filter set to: **%s**\n\nPerplexity will search content before this date.", arg)
+
+		reply := fmt.Sprintf("Before-date filter set to: **%s**\n\nPerplexity will search content before this date.", arg)
+		if clearedRecency != "" {
+			reply += fmt.Sprintf("\n\n⚠️ **Cleared conflicting filter:** recency (%s) (cannot combine date filters with recency)", clearedRecency)
+		}
+		ce.Reply(reply)
 
 	case "images", "image", "img":
 		if len(ce.Args) < 2 {

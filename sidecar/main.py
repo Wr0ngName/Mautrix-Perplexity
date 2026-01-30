@@ -541,6 +541,15 @@ async def run_query_stream(request: ChatRequest, session: Optional[Session] = No
                 if choice.finish_reason:
                     yield {"type": "finish", "reason": choice.finish_reason}
 
+            # Check for usage info (typically in final chunks)
+            if hasattr(chunk, 'usage') and chunk.usage:
+                usage = chunk.usage
+                yield {
+                    "type": "usage",
+                    "input_tokens": getattr(usage, 'prompt_tokens', 0) or 0,
+                    "output_tokens": getattr(usage, 'completion_tokens', 0) or 0,
+                }
+
             # Check for citations in the chunk (delivered in final chunks)
             if hasattr(chunk, 'citations') and chunk.citations:
                 citations = []
@@ -755,6 +764,8 @@ async def chat_stream(request: ChatRequest):
 
     async def generate() -> AsyncIterator[str]:
         response_text = []
+        input_tokens = 0
+        output_tokens = 0
         try:
             async with asyncio.timeout(QUERY_TIMEOUT):
                 async for event in run_query_stream(request, session_for_history):
@@ -762,12 +773,26 @@ async def chat_stream(request: ChatRequest):
                     # Collect response text for history
                     if event.get("type") == "text" and event.get("content"):
                         response_text.append(event["content"])
+                    # Collect usage info for token tracking
+                    if event.get("type") == "usage":
+                        input_tokens = event.get("input_tokens", 0)
+                        output_tokens = event.get("output_tokens", 0)
 
             # Only save to history if conversation_mode is enabled
             if request.conversation_mode:
                 session.add_message("user", user_content)
                 if response_text:
                     session.add_message("assistant", "".join(response_text))
+
+            # Update session token stats (always track for billing purposes)
+            session.input_tokens += input_tokens
+            session.output_tokens += output_tokens
+
+            # Update Prometheus metrics
+            if input_tokens > 0:
+                TOKENS_USED.labels(type='input').inc(input_tokens)
+            if output_tokens > 0:
+                TOKENS_USED.labels(type='output').inc(output_tokens)
 
         except asyncio.TimeoutError:
             logger.error(f"Stream query timed out for portal {request.portal_id}")

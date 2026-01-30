@@ -79,16 +79,18 @@ type Usage struct {
 
 // StreamEvent represents an event in a streaming response.
 type StreamEvent struct {
-	Type      string                 `json:"type"` // "message_start", "content_block_delta", "message_stop", "error", "citations", "images", etc.
-	Index     int                    `json:"index,omitempty"`
-	Delta     *ContentDelta          `json:"delta,omitempty"`
-	Message   *CreateMessageResponse `json:"message,omitempty"`
-	Model     string                 `json:"model,omitempty"`      // Actual model used
-	SessionID string                 `json:"session_id,omitempty"` // Session ID from sidecar
-	Usage     *Usage                 `json:"usage,omitempty"`
-	Error     *StreamError           `json:"error,omitempty"`    // Error details for "error" type events
-	Citations []SearchResult         `json:"citations,omitempty"` // Citations from Perplexity search
-	Images    []ImageResult          `json:"images,omitempty"`    // Images from Perplexity (requires return_images)
+	Type         string                 `json:"type"` // "message_start", "content_block_delta", "message_stop", "error", "citations", "images", "usage", etc.
+	Index        int                    `json:"index,omitempty"`
+	Delta        *ContentDelta          `json:"delta,omitempty"`
+	Message      *CreateMessageResponse `json:"message,omitempty"`
+	Model        string                 `json:"model,omitempty"`         // Actual model used
+	SessionID    string                 `json:"session_id,omitempty"`    // Session ID from sidecar
+	Usage        *Usage                 `json:"usage,omitempty"`         // Usage info (for message_delta)
+	InputTokens  int                    `json:"input_tokens,omitempty"`  // Input tokens (for "usage" event type)
+	OutputTokens int                    `json:"output_tokens,omitempty"` // Output tokens (for "usage" event type)
+	Error        *StreamError           `json:"error,omitempty"`         // Error details for "error" type events
+	Citations    []SearchResult         `json:"citations,omitempty"`     // Citations from Perplexity search
+	Images       []ImageResult          `json:"images,omitempty"`        // Images from Perplexity (requires return_images)
 }
 
 // StreamError represents an error in a streaming response.
