@@ -206,8 +206,8 @@ func (c *PerplexityConnector) RegisterCommands(proc *commands.Processor) {
 			Aliases: []string{"search", "web-search"},
 			Help: commands.HelpMeta{
 				Section:     commands.HelpSectionGeneral,
-				Description: "Configure web search options (domain filter and recency)",
-				Args:        "[domains <domain1,domain2,...>|recency <day|week|month|year>|clear]",
+				Description: "Configure web search options (domains, recency, dates, images, mode, location)",
+				Args:        "[domains|recency|after|before|images|context|mode|location|clear] [value]",
 			},
 			RequiresLogin:  true,
 			RequiresPortal: true,
@@ -637,7 +637,7 @@ func (c *PerplexityConnector) cmdConversation(ce *commands.Event) {
 	}
 }
 
-// cmdWeb configures web search options (domain filter and recency).
+// cmdWeb configures web search options.
 func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 	if ce.Portal == nil {
 		ce.Reply("This command must be run in a Perplexity conversation room.")
@@ -664,16 +664,62 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 		}
 
 		if meta.WebSearchRecency != "" {
-			sb.WriteString("**Recency filter:** ")
-			sb.WriteString(meta.WebSearchRecency)
-			sb.WriteString("\n")
+			sb.WriteString(fmt.Sprintf("**Recency filter:** %s\n", meta.WebSearchRecency))
 		} else {
 			sb.WriteString("**Recency filter:** none (all time)\n")
 		}
 
+		if meta.WebSearchAfterDate != "" || meta.WebSearchBeforeDate != "" {
+			sb.WriteString("**Date range:** ")
+			if meta.WebSearchAfterDate != "" {
+				sb.WriteString(fmt.Sprintf("after %s", meta.WebSearchAfterDate))
+			}
+			if meta.WebSearchAfterDate != "" && meta.WebSearchBeforeDate != "" {
+				sb.WriteString(", ")
+			}
+			if meta.WebSearchBeforeDate != "" {
+				sb.WriteString(fmt.Sprintf("before %s", meta.WebSearchBeforeDate))
+			}
+			sb.WriteString("\n")
+		}
+
+		if meta.ReturnImages != nil && *meta.ReturnImages {
+			sb.WriteString("**Images:** enabled\n")
+		}
+
+		if meta.SearchContextSize != "" {
+			sb.WriteString(fmt.Sprintf("**Context size:** %s\n", meta.SearchContextSize))
+		}
+
+		if meta.SearchMode != "" {
+			sb.WriteString(fmt.Sprintf("**Search mode:** %s\n", meta.SearchMode))
+		}
+
+		if meta.UserLocationCity != "" || meta.UserLocationCountry != "" {
+			sb.WriteString("**Location:** ")
+			parts := []string{}
+			if meta.UserLocationCity != "" {
+				parts = append(parts, meta.UserLocationCity)
+			}
+			if meta.UserLocationRegion != "" {
+				parts = append(parts, meta.UserLocationRegion)
+			}
+			if meta.UserLocationCountry != "" {
+				parts = append(parts, meta.UserLocationCountry)
+			}
+			sb.WriteString(strings.Join(parts, ", "))
+			sb.WriteString("\n")
+		}
+
 		sb.WriteString("\n**Usage:**\n")
-		sb.WriteString("- `web domains example.com,docs.example.org` - Only search these domains\n")
+		sb.WriteString("- `web domains <domain1,domain2,...>` - Only search these domains\n")
 		sb.WriteString("- `web recency day|week|month|year` - Limit to recent results\n")
+		sb.WriteString("- `web after <MM/DD/YYYY>` - Search after date\n")
+		sb.WriteString("- `web before <MM/DD/YYYY>` - Search before date\n")
+		sb.WriteString("- `web images on|off` - Include images (Tier-2+)\n")
+		sb.WriteString("- `web context low|medium|high` - Search context size\n")
+		sb.WriteString("- `web mode academic|web` - Search mode\n")
+		sb.WriteString("- `web location <city,region,country>` - Location for local results\n")
 		sb.WriteString("- `web clear` - Remove all filters\n")
 		ce.Reply(sb.String())
 		return
@@ -728,7 +774,7 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 		}
 		ce.Reply("Domain filter set to: **%s**\n\nPerplexity will only search these domains.", strings.Join(cleanDomains, ", "))
 
-	case "recency", "recent", "time", "filter":
+	case "recency", "recent", "time":
 		if len(ce.Args) < 2 {
 			if meta.WebSearchRecency != "" {
 				ce.Reply("**Current recency filter:** %s\n\nTo change: `web recency day|week|month|year`\nTo clear: `web recency clear`", meta.WebSearchRecency)
@@ -766,21 +812,264 @@ func (c *PerplexityConnector) cmdWeb(ce *commands.Event) {
 		}
 		ce.Reply("Recency filter set to: **%s**\n\nPerplexity will prioritize results from the last %s.", arg, arg)
 
-	case "clear", "reset":
-		oldDomains := meta.WebSearchDomains
-		oldRecency := meta.WebSearchRecency
-		meta.WebSearchDomains = nil
-		meta.WebSearchRecency = ""
+	case "after", "from", "since":
+		if len(ce.Args) < 2 {
+			if meta.WebSearchAfterDate != "" {
+				ce.Reply("**Current after-date filter:** %s\n\nTo change: `web after MM/DD/YYYY`\nTo clear: `web after clear`", meta.WebSearchAfterDate)
+			} else {
+				ce.Reply("No after-date filter set. To add: `web after MM/DD/YYYY`")
+			}
+			return
+		}
+
+		arg := ce.Args[1]
+		if arg == "clear" || arg == "none" || arg == "off" {
+			oldDate := meta.WebSearchAfterDate
+			meta.WebSearchAfterDate = ""
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				meta.WebSearchAfterDate = oldDate
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("After-date filter **cleared**.")
+			return
+		}
+
+		oldDate := meta.WebSearchAfterDate
+		meta.WebSearchAfterDate = arg
 		if err := ce.Portal.Save(ce.Ctx); err != nil {
-			meta.WebSearchDomains = oldDomains
-			meta.WebSearchRecency = oldRecency
+			meta.WebSearchAfterDate = oldDate
 			ce.Reply("Failed to save setting: %v", err)
 			return
 		}
-		ce.Reply("Web search filters **cleared**. Perplexity will search all domains and all time.")
+		ce.Reply("After-date filter set to: **%s**\n\nPerplexity will search content after this date.", arg)
+
+	case "before", "until", "to":
+		if len(ce.Args) < 2 {
+			if meta.WebSearchBeforeDate != "" {
+				ce.Reply("**Current before-date filter:** %s\n\nTo change: `web before MM/DD/YYYY`\nTo clear: `web before clear`", meta.WebSearchBeforeDate)
+			} else {
+				ce.Reply("No before-date filter set. To add: `web before MM/DD/YYYY`")
+			}
+			return
+		}
+
+		arg := ce.Args[1]
+		if arg == "clear" || arg == "none" || arg == "off" {
+			oldDate := meta.WebSearchBeforeDate
+			meta.WebSearchBeforeDate = ""
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				meta.WebSearchBeforeDate = oldDate
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("Before-date filter **cleared**.")
+			return
+		}
+
+		oldDate := meta.WebSearchBeforeDate
+		meta.WebSearchBeforeDate = arg
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.WebSearchBeforeDate = oldDate
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("Before-date filter set to: **%s**\n\nPerplexity will search content before this date.", arg)
+
+	case "images", "image", "img":
+		if len(ce.Args) < 2 {
+			if meta.ReturnImages != nil && *meta.ReturnImages {
+				ce.Reply("**Images:** enabled\n\nTo disable: `web images off`")
+			} else {
+				ce.Reply("**Images:** disabled\n\nTo enable: `web images on` (requires Tier-2+ API access)")
+			}
+			return
+		}
+
+		arg := strings.ToLower(ce.Args[1])
+		var newValue bool
+		switch arg {
+		case "on", "true", "yes", "1", "enable", "enabled":
+			newValue = true
+		case "off", "false", "no", "0", "disable", "disabled", "clear":
+			newValue = false
+		default:
+			ce.Reply("Invalid value. Use: `web images on` or `web images off`")
+			return
+		}
+
+		oldValue := meta.ReturnImages
+		meta.ReturnImages = &newValue
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.ReturnImages = oldValue
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		if newValue {
+			ce.Reply("Images **enabled**. Perplexity will include images in responses (requires Tier-2+ API access).")
+		} else {
+			ce.Reply("Images **disabled**.")
+		}
+
+	case "context", "contextsize", "size":
+		if len(ce.Args) < 2 {
+			if meta.SearchContextSize != "" {
+				ce.Reply("**Current context size:** %s\n\nTo change: `web context low|medium|high`\nTo clear: `web context clear`", meta.SearchContextSize)
+			} else {
+				ce.Reply("No context size set (using default). To set: `web context low|medium|high`")
+			}
+			return
+		}
+
+		arg := strings.ToLower(ce.Args[1])
+		if arg == "clear" || arg == "none" || arg == "off" || arg == "default" {
+			oldSize := meta.SearchContextSize
+			meta.SearchContextSize = ""
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				meta.SearchContextSize = oldSize
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("Context size **cleared** (using default).")
+			return
+		}
+
+		validSizes := map[string]bool{"low": true, "medium": true, "high": true}
+		if !validSizes[arg] {
+			ce.Reply("Invalid context size. Use: `low`, `medium`, or `high`.")
+			return
+		}
+
+		oldSize := meta.SearchContextSize
+		meta.SearchContextSize = arg
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.SearchContextSize = oldSize
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("Context size set to: **%s**", arg)
+
+	case "mode", "searchmode":
+		if len(ce.Args) < 2 {
+			if meta.SearchMode != "" {
+				ce.Reply("**Current search mode:** %s\n\nTo change: `web mode academic|web`\nTo clear: `web mode clear`", meta.SearchMode)
+			} else {
+				ce.Reply("No search mode set (using default). To set: `web mode academic|web`")
+			}
+			return
+		}
+
+		arg := strings.ToLower(ce.Args[1])
+		if arg == "clear" || arg == "none" || arg == "off" || arg == "default" {
+			oldMode := meta.SearchMode
+			meta.SearchMode = ""
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				meta.SearchMode = oldMode
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("Search mode **cleared** (using default).")
+			return
+		}
+
+		validModes := map[string]bool{"academic": true, "web": true}
+		if !validModes[arg] {
+			ce.Reply("Invalid search mode. Use: `academic` or `web`.")
+			return
+		}
+
+		oldMode := meta.SearchMode
+		meta.SearchMode = arg
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			meta.SearchMode = oldMode
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("Search mode set to: **%s**", arg)
+
+	case "location", "loc":
+		if len(ce.Args) < 2 {
+			if meta.UserLocationCity != "" || meta.UserLocationCountry != "" {
+				parts := []string{}
+				if meta.UserLocationCity != "" {
+					parts = append(parts, meta.UserLocationCity)
+				}
+				if meta.UserLocationRegion != "" {
+					parts = append(parts, meta.UserLocationRegion)
+				}
+				if meta.UserLocationCountry != "" {
+					parts = append(parts, meta.UserLocationCountry)
+				}
+				ce.Reply("**Current location:** %s\n\nTo change: `web location city,region,country`\nTo clear: `web location clear`", strings.Join(parts, ", "))
+			} else {
+				ce.Reply("No location set. To add: `web location city,region,country`\n\nExamples:\n- `web location Berlin,Berlin,Germany`\n- `web location ,California,US`\n- `web location ,,US`")
+			}
+			return
+		}
+
+		arg := ce.Args[1]
+		if arg == "clear" || arg == "none" || arg == "off" {
+			meta.UserLocationCity = ""
+			meta.UserLocationRegion = ""
+			meta.UserLocationCountry = ""
+			meta.UserLocationTimezone = ""
+			if err := ce.Portal.Save(ce.Ctx); err != nil {
+				ce.Reply("Failed to save setting: %v", err)
+				return
+			}
+			ce.Reply("Location **cleared**.")
+			return
+		}
+
+		// Parse city,region,country format
+		parts := strings.SplitN(arg, ",", 3)
+		if len(parts) > 0 {
+			meta.UserLocationCity = strings.TrimSpace(parts[0])
+		}
+		if len(parts) > 1 {
+			meta.UserLocationRegion = strings.TrimSpace(parts[1])
+		}
+		if len(parts) > 2 {
+			meta.UserLocationCountry = strings.TrimSpace(parts[2])
+		}
+
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+
+		locParts := []string{}
+		if meta.UserLocationCity != "" {
+			locParts = append(locParts, meta.UserLocationCity)
+		}
+		if meta.UserLocationRegion != "" {
+			locParts = append(locParts, meta.UserLocationRegion)
+		}
+		if meta.UserLocationCountry != "" {
+			locParts = append(locParts, meta.UserLocationCountry)
+		}
+		ce.Reply("Location set to: **%s**\n\nPerplexity will use this for location-aware results.", strings.Join(locParts, ", "))
+
+	case "clear", "reset":
+		meta.WebSearchDomains = nil
+		meta.WebSearchRecency = ""
+		meta.WebSearchAfterDate = ""
+		meta.WebSearchBeforeDate = ""
+		meta.ReturnImages = nil
+		meta.SearchContextSize = ""
+		meta.SearchMode = ""
+		meta.UserLocationCity = ""
+		meta.UserLocationRegion = ""
+		meta.UserLocationCountry = ""
+		meta.UserLocationTimezone = ""
+		if err := ce.Portal.Save(ce.Ctx); err != nil {
+			ce.Reply("Failed to save setting: %v", err)
+			return
+		}
+		ce.Reply("All web search settings **cleared**.")
 
 	default:
-		ce.Reply("Unknown subcommand. Use:\n- `web domains <domain1,domain2,...>`\n- `web recency <day|week|month|year>`\n- `web clear`")
+		ce.Reply("Unknown subcommand. Use:\n- `web domains <domain1,domain2,...>`\n- `web recency day|week|month|year`\n- `web after <MM/DD/YYYY>`\n- `web before <MM/DD/YYYY>`\n- `web images on|off`\n- `web context low|medium|high`\n- `web mode academic|web`\n- `web location city,region,country`\n- `web clear`")
 	}
 }
 

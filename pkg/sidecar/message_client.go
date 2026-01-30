@@ -204,6 +204,26 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *perplexity
 			m.log.Debug().Int("citation_count", len(citations)).Msg("Emitted citations event")
 		}
 
+		// Send images if available (requires return_images=true)
+		if len(resp.Images) > 0 {
+			var images []perplexityapi.ImageResult
+			for _, img := range resp.Images {
+				images = append(images, perplexityapi.ImageResult{
+					URL:       img.URL,
+					OriginURL: img.OriginURL,
+					Height:    img.Height,
+					Width:     img.Width,
+				})
+			}
+			if !sendEvent(perplexityapi.StreamEvent{
+				Type:   "images",
+				Images: images,
+			}) {
+				return
+			}
+			m.log.Debug().Int("image_count", len(images)).Msg("Emitted images event")
+		}
+
 		// Send message_stop
 		sendEvent(perplexityapi.StreamEvent{
 			Type: "message_stop",

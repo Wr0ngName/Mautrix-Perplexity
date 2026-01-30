@@ -560,10 +560,32 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	}
 
 	// Add web search options from portal metadata if configured
-	if len(meta.WebSearchDomains) > 0 || meta.WebSearchRecency != "" {
+	hasWebOpts := len(meta.WebSearchDomains) > 0 || meta.WebSearchRecency != "" ||
+		meta.WebSearchAfterDate != "" || meta.WebSearchBeforeDate != "" ||
+		meta.ReturnImages != nil || meta.SearchContextSize != "" ||
+		meta.SearchMode != "" || meta.UserLocationCity != "" ||
+		meta.UserLocationRegion != "" || meta.UserLocationCountry != "" ||
+		meta.UserLocationTimezone != ""
+
+	if hasWebOpts {
 		webOpts := &sidecar.WebSearchOptions{
-			SearchDomainFilter:  meta.WebSearchDomains,
-			SearchRecencyFilter: meta.WebSearchRecency,
+			SearchDomainFilter:     meta.WebSearchDomains,
+			SearchRecencyFilter:    meta.WebSearchRecency,
+			SearchAfterDateFilter:  meta.WebSearchAfterDate,
+			SearchBeforeDateFilter: meta.WebSearchBeforeDate,
+			ReturnImages:           meta.ReturnImages,
+			SearchContextSize:      meta.SearchContextSize,
+			SearchMode:             meta.SearchMode,
+		}
+		// Add user location if any field is set
+		if meta.UserLocationCity != "" || meta.UserLocationRegion != "" ||
+			meta.UserLocationCountry != "" || meta.UserLocationTimezone != "" {
+			webOpts.UserLocation = &sidecar.UserLocation{
+				City:     meta.UserLocationCity,
+				Region:   meta.UserLocationRegion,
+				Country:  meta.UserLocationCountry,
+				Timezone: meta.UserLocationTimezone,
+			}
 		}
 		ctx = sidecar.WithWebSearchOptions(ctx, webOpts)
 	}
@@ -619,6 +641,7 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	var inputTokens, outputTokens int
 	var streamError error
 	var citations []perplexityapi.SearchResult
+	var images []perplexityapi.ImageResult
 
 	for event := range stream {
 		switch event.Type {
@@ -644,6 +667,14 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 				c.Connector.Log.Debug().
 					Int("citation_count", len(event.Citations)).
 					Msg("Received citations from Perplexity")
+			}
+		case "images":
+			// Collect images from Perplexity (requires return_images=true)
+			if len(event.Images) > 0 {
+				images = append(images, event.Images...)
+				c.Connector.Log.Debug().
+					Int("image_count", len(event.Images)).
+					Msg("Received images from Perplexity")
 			}
 		case "error":
 			c.Connector.Log.Error().Interface("event", event).Msg("Error in stream")
@@ -696,6 +727,14 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		c.Connector.Log.Debug().
 			Int("citation_count", len(citations)).
 			Msg("Appended citations to response")
+	}
+
+	// Append images to the response if any
+	if len(images) > 0 {
+		responseContent = appendImages(responseContent, images)
+		c.Connector.Log.Debug().
+			Int("image_count", len(images)).
+			Msg("Appended images to response")
 	}
 
 	// Queue the assistant's response as an incoming message
@@ -961,6 +1000,27 @@ func appendCitations(text string, citations []perplexityapi.SearchResult) string
 	for i, citation := range citations {
 		if citation.URL != "" {
 			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, citation.URL))
+		}
+	}
+
+	return sb.String()
+}
+
+// appendImages appends image URLs to the response text as markdown images.
+// Images are displayed inline in the response.
+func appendImages(text string, images []perplexityapi.ImageResult) string {
+	if len(images) == 0 {
+		return text
+	}
+
+	var sb strings.Builder
+	sb.WriteString(text)
+	sb.WriteString("\n\n---\n**Images:**\n")
+
+	for _, img := range images {
+		if img.URL != "" {
+			// Use markdown image syntax for Matrix clients that support it
+			sb.WriteString(fmt.Sprintf("![image](%s)\n", img.URL))
 		}
 	}
 

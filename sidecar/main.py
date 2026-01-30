@@ -116,10 +116,24 @@ class ContentBlock(BaseModel):
     source: Optional[ImageSource] = None  # For image blocks
 
 
+class UserLocation(BaseModel):
+    """User location for location-aware search results."""
+    city: Optional[str] = None
+    region: Optional[str] = None
+    country: Optional[str] = None
+    timezone: Optional[str] = None
+
+
 class WebSearchOptions(BaseModel):
     """Perplexity web search options."""
     search_domain_filter: Optional[list[str]] = None
     search_recency_filter: Optional[str] = None  # "day", "week", "month", "year"
+    search_after_date_filter: Optional[str] = None  # MM/DD/YYYY format
+    search_before_date_filter: Optional[str] = None  # MM/DD/YYYY format
+    return_images: Optional[bool] = None  # Include images in results (Tier-2+ only)
+    search_context_size: Optional[str] = None  # "low", "medium", "high"
+    search_mode: Optional[str] = None  # "academic" or "web"
+    user_location: Optional[UserLocation] = None  # Location for local results
 
 
 class ChatRequest(BaseModel):
@@ -190,6 +204,14 @@ class SearchResult(BaseModel):
     date: Optional[str] = None
 
 
+class ImageResult(BaseModel):
+    """Image result from Perplexity."""
+    url: Optional[str] = None
+    origin_url: Optional[str] = None
+    height: Optional[int] = None
+    width: Optional[int] = None
+
+
 class ChatResponse(BaseModel):
     """Response body for chat endpoint."""
     portal_id: str
@@ -199,6 +221,7 @@ class ChatResponse(BaseModel):
     tokens_used: Optional[int] = None
     usage: Optional[UsageInfo] = None
     search_results: Optional[list[SearchResult]] = None
+    images: Optional[list[ImageResult]] = None
 
 
 class SessionManager:
@@ -354,6 +377,7 @@ class QueryResult:
     input_tokens: int = 0
     output_tokens: int = 0
     search_results: list = field(default_factory=list)
+    images: list = field(default_factory=list)
 
 
 async def run_query(request: ChatRequest, session: Optional[Session] = None) -> QueryResult:
@@ -384,6 +408,29 @@ async def run_query(request: ChatRequest, session: Optional[Session] = None) -> 
             params["search_domain_filter"] = request.web_search_options.search_domain_filter
         if request.web_search_options.search_recency_filter:
             params["search_recency_filter"] = request.web_search_options.search_recency_filter
+        if request.web_search_options.search_after_date_filter:
+            params["search_after_date_filter"] = request.web_search_options.search_after_date_filter
+        if request.web_search_options.search_before_date_filter:
+            params["search_before_date_filter"] = request.web_search_options.search_before_date_filter
+        if request.web_search_options.return_images is not None:
+            params["return_images"] = request.web_search_options.return_images
+        if request.web_search_options.search_context_size:
+            params["search_context_size"] = request.web_search_options.search_context_size
+        if request.web_search_options.search_mode:
+            params["search_mode"] = request.web_search_options.search_mode
+        if request.web_search_options.user_location:
+            loc = request.web_search_options.user_location
+            user_loc = {}
+            if loc.city:
+                user_loc["city"] = loc.city
+            if loc.region:
+                user_loc["region"] = loc.region
+            if loc.country:
+                user_loc["country"] = loc.country
+            if loc.timezone:
+                user_loc["timezone"] = loc.timezone
+            if user_loc:
+                params["user_location"] = user_loc
 
     # Create async client with user's API key
     async with AsyncPerplexity(api_key=request.api_key) as client:
@@ -404,12 +451,25 @@ async def run_query(request: ChatRequest, session: Optional[Session] = None) -> 
             result.input_tokens = response.usage.prompt_tokens or 0
             result.output_tokens = response.usage.completion_tokens or 0
 
-        # Extract search results if available
+        # Extract search results/citations if available
         if hasattr(response, 'citations') and response.citations:
             for citation in response.citations:
                 result.search_results.append({
                     "url": citation if isinstance(citation, str) else getattr(citation, 'url', None),
                 })
+
+        # Extract images if available (requires return_images=true and Tier-2+)
+        if hasattr(response, 'images') and response.images:
+            for img in response.images:
+                if isinstance(img, str):
+                    result.images.append({"url": img})
+                elif hasattr(img, 'url'):
+                    result.images.append({
+                        "url": getattr(img, 'url', None),
+                        "origin_url": getattr(img, 'origin_url', None),
+                        "height": getattr(img, 'height', None),
+                        "width": getattr(img, 'width', None),
+                    })
 
     return result
 
@@ -440,6 +500,29 @@ async def run_query_stream(request: ChatRequest, session: Optional[Session] = No
             params["search_domain_filter"] = request.web_search_options.search_domain_filter
         if request.web_search_options.search_recency_filter:
             params["search_recency_filter"] = request.web_search_options.search_recency_filter
+        if request.web_search_options.search_after_date_filter:
+            params["search_after_date_filter"] = request.web_search_options.search_after_date_filter
+        if request.web_search_options.search_before_date_filter:
+            params["search_before_date_filter"] = request.web_search_options.search_before_date_filter
+        if request.web_search_options.return_images is not None:
+            params["return_images"] = request.web_search_options.return_images
+        if request.web_search_options.search_context_size:
+            params["search_context_size"] = request.web_search_options.search_context_size
+        if request.web_search_options.search_mode:
+            params["search_mode"] = request.web_search_options.search_mode
+        if request.web_search_options.user_location:
+            loc = request.web_search_options.user_location
+            user_loc = {}
+            if loc.city:
+                user_loc["city"] = loc.city
+            if loc.region:
+                user_loc["region"] = loc.region
+            if loc.country:
+                user_loc["country"] = loc.country
+            if loc.timezone:
+                user_loc["timezone"] = loc.timezone
+            if user_loc:
+                params["user_location"] = user_loc
 
     # Send session info first
     yield {"type": "session", "model": model}
@@ -468,6 +551,22 @@ async def run_query_stream(request: ChatRequest, session: Optional[Session] = No
                         citations.append({"url": citation.url})
                 if citations:
                     yield {"type": "citations", "citations": citations}
+
+            # Check for images in the chunk (requires return_images=true)
+            if hasattr(chunk, 'images') and chunk.images:
+                images = []
+                for img in chunk.images:
+                    if isinstance(img, str):
+                        images.append({"url": img})
+                    elif hasattr(img, 'url'):
+                        images.append({
+                            "url": getattr(img, 'url', None),
+                            "origin_url": getattr(img, 'origin_url', None),
+                            "height": getattr(img, 'height', None),
+                            "width": getattr(img, 'width', None),
+                        })
+                if images:
+                    yield {"type": "images", "images": images}
 
     yield {"type": "done"}
 
@@ -600,6 +699,19 @@ async def chat(request: ChatRequest):
                 for sr in query_result.search_results
             ]
 
+        # Convert images
+        images = None
+        if query_result.images:
+            images = [
+                ImageResult(
+                    url=img.get("url"),
+                    origin_url=img.get("origin_url"),
+                    height=img.get("height"),
+                    width=img.get("width"),
+                )
+                for img in query_result.images
+            ]
+
         return ChatResponse(
             portal_id=request.portal_id,
             session_id=session.session_id,
@@ -608,6 +720,7 @@ async def chat(request: ChatRequest):
             tokens_used=total_tokens if total_tokens > 0 else None,
             usage=usage_info,
             search_results=search_results,
+            images=images,
         )
 
     except asyncio.TimeoutError:

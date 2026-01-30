@@ -59,10 +59,24 @@ type ImageSource struct {
 	Data      string `json:"data"`       // Base64-encoded image data
 }
 
+// UserLocation represents user location for location-aware search results.
+type UserLocation struct {
+	City     string `json:"city,omitempty"`
+	Region   string `json:"region,omitempty"`
+	Country  string `json:"country,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+}
+
 // WebSearchOptions represents Perplexity web search options.
 type WebSearchOptions struct {
-	SearchDomainFilter  []string `json:"search_domain_filter,omitempty"`
-	SearchRecencyFilter string   `json:"search_recency_filter,omitempty"` // "day", "week", "month", "year"
+	SearchDomainFilter     []string      `json:"search_domain_filter,omitempty"`
+	SearchRecencyFilter    string        `json:"search_recency_filter,omitempty"`      // "day", "week", "month", "year"
+	SearchAfterDateFilter  string        `json:"search_after_date_filter,omitempty"`   // MM/DD/YYYY format
+	SearchBeforeDateFilter string        `json:"search_before_date_filter,omitempty"`  // MM/DD/YYYY format
+	ReturnImages           *bool         `json:"return_images,omitempty"`              // Include images in results (Tier-2+)
+	SearchContextSize      string        `json:"search_context_size,omitempty"`        // "low", "medium", "high"
+	SearchMode             string        `json:"search_mode,omitempty"`                // "academic" or "web"
+	UserLocation           *UserLocation `json:"user_location,omitempty"`              // Location for local results
 }
 
 // ChatRequest is the request body for the chat endpoint.
@@ -88,6 +102,14 @@ type SearchResult struct {
 	Date  string `json:"date,omitempty"`
 }
 
+// ImageResult represents an image result from Perplexity.
+type ImageResult struct {
+	URL       string `json:"url,omitempty"`
+	OriginURL string `json:"origin_url,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Width     int    `json:"width,omitempty"`
+}
+
 // ChatResponse is the response body from the chat endpoint.
 type ChatResponse struct {
 	PortalID      string         `json:"portal_id"`
@@ -96,6 +118,7 @@ type ChatResponse struct {
 	Model         string         `json:"model"`
 	TokensUsed    *int           `json:"tokens_used,omitempty"`
 	SearchResults []SearchResult `json:"search_results,omitempty"`
+	Images        []ImageResult  `json:"images,omitempty"`
 }
 
 // SessionStats contains statistics about a session.

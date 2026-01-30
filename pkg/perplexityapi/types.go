@@ -51,6 +51,14 @@ type SearchResult struct {
 	Date  string `json:"date,omitempty"`
 }
 
+// ImageResult represents an image result from Perplexity.
+type ImageResult struct {
+	URL       string `json:"url,omitempty"`
+	OriginURL string `json:"origin_url,omitempty"`
+	Height    int    `json:"height,omitempty"`
+	Width     int    `json:"width,omitempty"`
+}
+
 // CreateMessageResponse represents a response from creating a message.
 type CreateMessageResponse struct {
 	ID            string         `json:"id"`
@@ -71,7 +79,7 @@ type Usage struct {
 
 // StreamEvent represents an event in a streaming response.
 type StreamEvent struct {
-	Type      string                 `json:"type"` // "message_start", "content_block_delta", "message_stop", "error", "citations", etc.
+	Type      string                 `json:"type"` // "message_start", "content_block_delta", "message_stop", "error", "citations", "images", etc.
 	Index     int                    `json:"index,omitempty"`
 	Delta     *ContentDelta          `json:"delta,omitempty"`
 	Message   *CreateMessageResponse `json:"message,omitempty"`
@@ -80,6 +88,7 @@ type StreamEvent struct {
 	Usage     *Usage                 `json:"usage,omitempty"`
 	Error     *StreamError           `json:"error,omitempty"`    // Error details for "error" type events
 	Citations []SearchResult         `json:"citations,omitempty"` // Citations from Perplexity search
+	Images    []ImageResult          `json:"images,omitempty"`    // Images from Perplexity (requires return_images)
 }
 
 // StreamError represents an error in a streaming response.

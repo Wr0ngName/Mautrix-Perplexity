@@ -235,14 +235,23 @@ type MessageMetadata struct {
 
 // PortalMetadata contains Perplexity-specific portal/room metadata.
 type PortalMetadata struct {
-	ConversationName     string   `json:"conversation_name"`
-	Model                string   `json:"model"`                         // Selected model for this room
-	SystemPrompt         string   `json:"system_prompt,omitempty"`       // Custom system prompt
-	Temperature          *float64 `json:"temperature,omitempty"`         // Custom temperature
-	MentionOnly          bool     `json:"mention_only,omitempty"`        // Only respond when mentioned
-	ConversationMode     bool     `json:"conversation_mode,omitempty"`   // Enable multi-turn conversation history (default: off)
-	WebSearchDomains     []string `json:"web_search_domains,omitempty"`  // Domain filter for web search (include only these)
-	WebSearchRecency     string   `json:"web_search_recency,omitempty"`  // Recency filter: day, week, month, year
+	ConversationName       string   `json:"conversation_name"`
+	Model                  string   `json:"model"`                            // Selected model for this room
+	SystemPrompt           string   `json:"system_prompt,omitempty"`          // Custom system prompt
+	Temperature            *float64 `json:"temperature,omitempty"`            // Custom temperature
+	MentionOnly            bool     `json:"mention_only,omitempty"`           // Only respond when mentioned
+	ConversationMode       bool     `json:"conversation_mode,omitempty"`      // Enable multi-turn conversation history (default: off)
+	WebSearchDomains       []string `json:"web_search_domains,omitempty"`     // Domain filter for web search (include only these)
+	WebSearchRecency       string   `json:"web_search_recency,omitempty"`     // Recency filter: day, week, month, year
+	WebSearchAfterDate     string   `json:"web_search_after_date,omitempty"`  // Search after date (MM/DD/YYYY)
+	WebSearchBeforeDate    string   `json:"web_search_before_date,omitempty"` // Search before date (MM/DD/YYYY)
+	ReturnImages           *bool    `json:"return_images,omitempty"`          // Include images in results (Tier-2+)
+	SearchContextSize      string   `json:"search_context_size,omitempty"`    // "low", "medium", "high"
+	SearchMode             string   `json:"search_mode,omitempty"`            // "academic" or "web"
+	UserLocationCity       string   `json:"user_location_city,omitempty"`     // User city for location-aware results
+	UserLocationRegion     string   `json:"user_location_region,omitempty"`   // User region/state
+	UserLocationCountry    string   `json:"user_location_country,omitempty"`  // User country
+	UserLocationTimezone   string   `json:"user_location_timezone,omitempty"` // User timezone
 }
 
 // GetTemperature returns the temperature for this portal, or the default if not set.
