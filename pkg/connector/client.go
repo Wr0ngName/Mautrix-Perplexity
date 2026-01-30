@@ -618,6 +618,7 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 	var perplexityMessageID string
 	var inputTokens, outputTokens int
 	var streamError error
+	var citations []perplexityapi.SearchResult
 
 	for event := range stream {
 		switch event.Type {
@@ -635,6 +636,14 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		case "message_delta":
 			if event.Usage != nil {
 				outputTokens = event.Usage.OutputTokens
+			}
+		case "citations":
+			// Collect citations from Perplexity search results
+			if len(event.Citations) > 0 {
+				citations = append(citations, event.Citations...)
+				c.Connector.Log.Debug().
+					Int("citation_count", len(event.Citations)).
+					Msg("Received citations from Perplexity")
 			}
 		case "error":
 			c.Connector.Log.Error().Interface("event", event).Msg("Error in stream")
@@ -679,6 +688,14 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		errMsg := "received empty response from Perplexity"
 		c.sendErrorToRoom(ctx, msg.Portal, errMsg)
 		return nil, errors.New(errMsg)
+	}
+
+	// Append citations/sources to the response
+	if len(citations) > 0 {
+		responseContent = appendCitations(responseContent, citations)
+		c.Connector.Log.Debug().
+			Int("citation_count", len(citations)).
+			Msg("Appended citations to response")
 	}
 
 	// Queue the assistant's response as an incoming message
@@ -928,6 +945,26 @@ func (c *PerplexityClient) sendSizeErrorNotice(ctx context.Context, portal *brid
 	if err != nil {
 		c.Connector.Log.Error().Err(err).Msg("Failed to send size error notice")
 	}
+}
+
+// appendCitations appends source citations to the response text.
+// Citations are formatted as a numbered list of URLs.
+func appendCitations(text string, citations []perplexityapi.SearchResult) string {
+	if len(citations) == 0 {
+		return text
+	}
+
+	var sb strings.Builder
+	sb.WriteString(text)
+	sb.WriteString("\n\n---\n**Sources:**\n")
+
+	for i, citation := range citations {
+		if citation.URL != "" {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, citation.URL))
+		}
+	}
+
+	return sb.String()
 }
 
 // splitMessage splits a message into chunks that fit within the size limit.

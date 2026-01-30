@@ -458,6 +458,17 @@ async def run_query_stream(request: ChatRequest, session: Optional[Session] = No
                 if choice.finish_reason:
                     yield {"type": "finish", "reason": choice.finish_reason}
 
+            # Check for citations in the chunk (delivered in final chunks)
+            if hasattr(chunk, 'citations') and chunk.citations:
+                citations = []
+                for citation in chunk.citations:
+                    if isinstance(citation, str):
+                        citations.append({"url": citation})
+                    elif hasattr(citation, 'url'):
+                        citations.append({"url": citation.url})
+                if citations:
+                    yield {"type": "citations", "citations": citations}
+
     yield {"type": "done"}
 
 

@@ -71,14 +71,15 @@ type Usage struct {
 
 // StreamEvent represents an event in a streaming response.
 type StreamEvent struct {
-	Type      string                 `json:"type"` // "message_start", "content_block_delta", "message_stop", "error", etc.
+	Type      string                 `json:"type"` // "message_start", "content_block_delta", "message_stop", "error", "citations", etc.
 	Index     int                    `json:"index,omitempty"`
 	Delta     *ContentDelta          `json:"delta,omitempty"`
 	Message   *CreateMessageResponse `json:"message,omitempty"`
 	Model     string                 `json:"model,omitempty"`      // Actual model used
 	SessionID string                 `json:"session_id,omitempty"` // Session ID from sidecar
 	Usage     *Usage                 `json:"usage,omitempty"`
-	Error     *StreamError           `json:"error,omitempty"` // Error details for "error" type events
+	Error     *StreamError           `json:"error,omitempty"`    // Error details for "error" type events
+	Citations []SearchResult         `json:"citations,omitempty"` // Citations from Perplexity search
 }
 
 // StreamError represents an error in a streaming response.
