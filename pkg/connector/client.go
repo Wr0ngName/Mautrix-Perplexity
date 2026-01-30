@@ -455,10 +455,13 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		return nil, fmt.Errorf("%s", errMsg)
 	}
 
-	// Get sender display name for multi-user awareness
-	senderName := msg.Event.Sender.String() // Fallback to MXID
-	if memberInfo, err := c.Connector.br.Matrix.GetMemberInfo(ctx, msg.Portal.MXID, msg.Event.Sender); err == nil && memberInfo != nil && memberInfo.Displayname != "" {
-		senderName = memberInfo.Displayname
+	// Get sender display name for multi-user awareness (only used in conversation mode)
+	var senderName string
+	if meta.ConversationMode {
+		senderName = msg.Event.Sender.String() // Fallback to MXID
+		if memberInfo, err := c.Connector.br.Matrix.GetMemberInfo(ctx, msg.Portal.MXID, msg.Event.Sender); err == nil && memberInfo != nil && memberInfo.Displayname != "" {
+			senderName = memberInfo.Displayname
+		}
 	}
 
 	// Build content array based on message type
@@ -478,19 +481,31 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		}
 		messageContent = append(messageContent, *imageContent)
 
-		// Add caption/body text if present (with sender name)
+		// Add caption/body text if present (with sender name only in conversation mode)
 		if msg.Content.Body != "" && msg.Content.Body != msg.Content.FileName {
 			// Use getMessageText to preserve display names in mentions
 			captionText := getMessageText(msg.Content)
+			var textContent string
+			if senderName != "" {
+				textContent = fmt.Sprintf("[%s]: %s", senderName, captionText)
+			} else {
+				textContent = captionText
+			}
 			messageContent = append(messageContent, perplexityapi.Content{
 				Type: "text",
-				Text: fmt.Sprintf("[%s]: %s", senderName, captionText),
+				Text: textContent,
 			})
 		} else {
-			// Add a default prompt for image analysis (with sender name)
+			// Add a default prompt for image analysis (with sender name only in conversation mode)
+			var textContent string
+			if senderName != "" {
+				textContent = fmt.Sprintf("[%s]: What's in this image?", senderName)
+			} else {
+				textContent = "What's in this image?"
+			}
 			messageContent = append(messageContent, perplexityapi.Content{
 				Type: "text",
-				Text: fmt.Sprintf("[%s]: What's in this image?", senderName),
+				Text: textContent,
 			})
 		}
 
@@ -509,11 +524,16 @@ func (c *PerplexityClient) HandleMatrixMessage(ctx context.Context, msg *bridgev
 		if err := ValidateMessageLength(messageText); err != nil {
 			return nil, err
 		}
-		// Prepend sender name so Perplexity knows who's talking
-		textWithSender := fmt.Sprintf("[%s]: %s", senderName, messageText)
+		// Prepend sender name only in conversation mode so Perplexity knows who's talking
+		var textContent string
+		if senderName != "" {
+			textContent = fmt.Sprintf("[%s]: %s", senderName, messageText)
+		} else {
+			textContent = messageText
+		}
 		messageContent = append(messageContent, perplexityapi.Content{
 			Type: "text",
-			Text: textWithSender,
+			Text: textContent,
 		})
 	}
 
