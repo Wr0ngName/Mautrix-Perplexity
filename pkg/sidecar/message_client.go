@@ -185,6 +185,25 @@ func (m *MessageClient) CreateMessageStream(ctx context.Context, req *perplexity
 			return
 		}
 
+		// Send citations if available
+		if len(resp.SearchResults) > 0 {
+			var citations []perplexityapi.SearchResult
+			for _, sr := range resp.SearchResults {
+				citations = append(citations, perplexityapi.SearchResult{
+					Title: sr.Title,
+					URL:   sr.URL,
+					Date:  sr.Date,
+				})
+			}
+			if !sendEvent(perplexityapi.StreamEvent{
+				Type:      "citations",
+				Citations: citations,
+			}) {
+				return
+			}
+			m.log.Debug().Int("citation_count", len(citations)).Msg("Emitted citations event")
+		}
+
 		// Send message_stop
 		sendEvent(perplexityapi.StreamEvent{
 			Type: "message_stop",
