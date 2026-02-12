@@ -11,3 +11,6 @@ __pycache__/
 # Review files
 *_REVIEW*.md
 SECURITY_SUMMARY.md
+
+# Claude Code config
+.claude/
