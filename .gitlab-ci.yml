@@ -1,5 +1,6 @@
 stages:
   - docker
+  - publish
 
 variables:
   REGISTRY: dev.wn:5000
@@ -25,3 +26,23 @@ docker:
     - if: $CI_COMMIT_TAG
       when: always
     - when: manual
+
+dockerhub:
+  stage: publish
+  tags:
+    - shell
+  needs:
+    - docker
+  script:
+    - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
+    - VERSION="${CI_COMMIT_TAG#v}"
+    - DOCKERHUB_IMAGE="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+    - docker tag ${REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA} ${DOCKERHUB_IMAGE}:${VERSION}
+    - docker tag ${REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA} ${DOCKERHUB_IMAGE}:latest
+    - docker push ${DOCKERHUB_IMAGE}:${VERSION}
+    - docker push ${DOCKERHUB_IMAGE}:latest
+    - docker logout
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+      when: always
+
