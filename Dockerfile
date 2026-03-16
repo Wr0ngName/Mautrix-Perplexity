@@ -49,7 +49,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -s /usr/bin/python3 /usr/bin/python
 
 # Install yq for YAML processing
-RUN curl -sL https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+ARG TARGETARCH
+RUN curl -sL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${TARGETARCH}" \
     -o /usr/bin/yq && chmod +x /usr/bin/yq
 
 # Create bridge user
