@@ -11,7 +11,14 @@ docker:
   tags:
     - shell
   script:
-    - docker buildx create --use --name arm64builder 2>/dev/null || docker buildx use arm64builder
+    - |
+      cat > /tmp/buildkitd.toml << 'TOML'
+      [registry."dev.wn:5000"]
+        http = true
+        insecure = true
+      TOML
+    - docker buildx rm multiarch 2>/dev/null || true
+    - docker buildx create --use --name multiarch --config /tmp/buildkitd.toml
     - docker buildx build
         --platform linux/amd64,linux/arm64
         --build-arg COMMIT_HASH=${CI_COMMIT_SHA}
@@ -35,6 +42,14 @@ dockerhub:
   needs:
     - docker
   script:
+    - |
+      cat > /tmp/buildkitd.toml << 'TOML'
+      [registry."dev.wn:5000"]
+        http = true
+        insecure = true
+      TOML
+    - docker buildx rm multiarch 2>/dev/null || true
+    - docker buildx create --use --name multiarch --config /tmp/buildkitd.toml
     - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
     - VERSION="${CI_COMMIT_TAG#v}"
     - DOCKERHUB_IMAGE="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
