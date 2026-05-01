@@ -10,6 +10,7 @@ docker:
   stage: docker
   tags:
     - shell
+  resource_group: buildx
   script:
     - |
       cat > /tmp/buildkitd.toml << 'TOML'
@@ -17,7 +18,7 @@ docker:
         http = true
         insecure = true
       TOML
-    - docker buildx rm -f multiarch 2>/dev/null || true
+    - docker buildx rm multiarch 2>/dev/null || true
     - docker buildx create --use --name multiarch --config /tmp/buildkitd.toml
     - |
       TAGS="-t ${REGISTRY}/${IMAGE_NAME}:latest"
@@ -44,7 +45,7 @@ docker:
         --push
         .
   after_script:
-    - docker buildx rm -f multiarch 2>/dev/null || true
+    - docker buildx rm multiarch 2>/dev/null || true
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: always
@@ -56,6 +57,7 @@ dockerhub:
   stage: publish
   tags:
     - shell
+  resource_group: buildx
   needs:
     - docker
   script:
@@ -65,7 +67,7 @@ dockerhub:
         http = true
         insecure = true
       TOML
-    - docker buildx rm -f multiarch 2>/dev/null || true
+    - docker buildx rm multiarch 2>/dev/null || true
     - docker buildx create --use --name multiarch --config /tmp/buildkitd.toml
     - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
     - VERSION="${CI_COMMIT_TAG#v}"
@@ -80,7 +82,7 @@ dockerhub:
         ${REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
     - docker logout
   after_script:
-    - docker buildx rm -f multiarch 2>/dev/null || true
+    - docker buildx rm multiarch 2>/dev/null || true
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
       when: always
