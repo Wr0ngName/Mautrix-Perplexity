@@ -10,7 +10,6 @@ docker:
   stage: docker
   tags:
     - shell
-  resource_group: buildx
   script:
     - |
       cat > /tmp/buildkitd.toml << 'TOML'
@@ -21,31 +20,31 @@ docker:
     - docker buildx rm multiarch 2>/dev/null || true
     - docker buildx create --use --name multiarch --config /tmp/buildkitd.toml
     - |
-      TAGS="-t ${REGISTRY}/${IMAGE_NAME}:latest"
-      if [ -n "${CI_COMMIT_TAG}" ]; then
-        VERSION="${CI_COMMIT_TAG#v}"
-        MAJOR="$(echo ${VERSION} | cut -d. -f1)"
-        MINOR="$(echo ${VERSION} | cut -d. -f1-2)"
-        TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:${VERSION}"
-        TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:${MINOR}"
-        TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:${MAJOR}"
-        TAGS="${TAGS} -t ${REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}"
-        BUILD_VERSION="${VERSION}"
+      if [[ "${CI_COMMIT_TAG}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
       else
-        DEV_VERSION="0.1.0-dev.${CI_COMMIT_SHORT_SHA}"
-        TAGS="-t ${REGISTRY}/${IMAGE_NAME}:${DEV_VERSION} -t ${REGISTRY}/${IMAGE_NAME}:latest"
-        BUILD_VERSION="${DEV_VERSION}"
+        VERSION="0.1.0-dev.${CI_COMMIT_SHORT_SHA}"
       fi
     - docker buildx build
         --platform linux/amd64,linux/arm64
         --build-arg COMMIT_HASH=${CI_COMMIT_SHA}
         --build-arg BUILD_TIME=$(date -Iseconds)
-        --build-arg VERSION=${BUILD_VERSION}
-        ${TAGS}
+        --build-arg VERSION=${VERSION}
+        -t ${REGISTRY}/${IMAGE_NAME}:${VERSION}
+        -t ${REGISTRY}/${IMAGE_NAME}:latest
+        -t ${REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
         --push
         .
-  after_script:
-    - docker buildx rm multiarch 2>/dev/null || true
+    - |
+      if [[ "${CI_COMMIT_TAG}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+        MAJOR="${BASH_REMATCH[1]}"
+        MINOR="${BASH_REMATCH[2]}"
+        VERSION="${MAJOR}.${MINOR}.${BASH_REMATCH[3]}"
+        docker buildx imagetools create \
+          -t ${REGISTRY}/${IMAGE_NAME}:${MAJOR}.${MINOR} \
+          -t ${REGISTRY}/${IMAGE_NAME}:${MAJOR} \
+          ${REGISTRY}/${IMAGE_NAME}:${VERSION}
+      fi
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: always
@@ -57,7 +56,7 @@ dockerhub:
   stage: publish
   tags:
     - shell
-  resource_group: buildx
+  retry: 2
   needs:
     - docker
   script:
@@ -71,8 +70,8 @@ dockerhub:
     - docker buildx create --use --name multiarch --config /tmp/buildkitd.toml
     - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
     - VERSION="${CI_COMMIT_TAG#v}"
-    - MAJOR="$(echo ${VERSION} | cut -d. -f1)"
-    - MINOR="$(echo ${VERSION} | cut -d. -f1-2)"
+    - MAJOR="${VERSION%%.*}"
+    - MINOR="${VERSION%.*}"
     - DOCKERHUB_IMAGE="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
     - docker buildx imagetools create
         -t ${DOCKERHUB_IMAGE}:${VERSION}
@@ -81,9 +80,6 @@ dockerhub:
         -t ${DOCKERHUB_IMAGE}:latest
         ${REGISTRY}/${IMAGE_NAME}:${CI_COMMIT_SHORT_SHA}
     - docker logout
-  after_script:
-    - docker buildx rm multiarch 2>/dev/null || true
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
       when: always
-
