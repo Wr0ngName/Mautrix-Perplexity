@@ -18,7 +18,31 @@ docker:
         insecure = true
       TOML
     - docker buildx rm ${IMAGE_NAME} 2>/dev/null || true
-    - docker buildx create --use --name ${IMAGE_NAME} --config /tmp/buildkitd.toml
+    # PINNED BUILDKIT — do not bump blindly, and do not drop without reading this.
+    #
+    # runc's shared-tmpfs maskPaths optimisation (opencontainers/runc#5275, shipped in
+    # runc v1.3.6 and v1.4.3) masks directories with a tmpfs mounted using nr_inodes=1.
+    # The dev.wn runner's kernel rejects that with EINVAL, so every RUN step — native
+    # amd64 as well as emulated arm64 — dies at container init with:
+    #
+    #   can't mask dir "/proc/acpi": mount src=tmpfs, dst=/proc/acpi,
+    #   flags=MS_RDONLY, data=nr_blocks=1,nr_inodes=1: invalid argument
+    #
+    # Upstream: moby/moby#52972, opencontainers/runc#5348.
+    #
+    # BuildKit -> bundled runc: v0.30.0 -> v1.3.5 (last unaffected release),
+    # v0.31.x -> v1.3.6, v0.32.x and v0.33.0 -> v1.4.3. runc v1.5.1 (2026-07-14) added
+    # an nr_inodes=2 fallback, but as of 2026-09-18 no BuildKit *release* has bumped
+    # past v1.4.3 — only master has it. buildx-stable-1 resolves to v0.33.0, which is
+    # why an unpinned builder breaks commits that built fine before.
+    #
+    # Accepted downside: runc v1.3.5 predates the CVE-2026-41579 fix (low severity,
+    # build sandbox only, trusted Dockerfiles).
+    #
+    # REVIEW THIS PIN when either of these happens:
+    #   - the dev.wn runner host kernel is upgraded -> drop the pin, go back to default
+    #   - BuildKit ships a release bundling runc >= v1.5.1 -> pin that release instead
+    - docker buildx create --use --name ${IMAGE_NAME} --config /tmp/buildkitd.toml --driver-opt image=moby/buildkit:v0.30.0
     - |
       if [[ "${CI_COMMIT_TAG}" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
         VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
@@ -67,6 +91,9 @@ dockerhub:
         insecure = true
       TOML
     - docker buildx rm ${IMAGE_NAME} 2>/dev/null || true
+    # No BuildKit pin needed here: this job only runs `imagetools create`, which
+    # manipulates manifests server-side and never starts a build container, so the
+    # runc maskPaths issue documented in the `docker` job cannot trigger.
     - docker buildx create --use --name ${IMAGE_NAME} --config /tmp/buildkitd.toml
     - echo "${DOCKERHUB_TOKEN}" | docker login -u "${DOCKERHUB_USERNAME}" --password-stdin
     - VERSION="${CI_COMMIT_TAG#v}"
